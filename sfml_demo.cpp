@@ -143,7 +143,6 @@ class SDFTree {
 
     types.resize(this->size());
     indices.resize(types.size());
-    fmt::println("this->numParams(): {}", this->numParams());
     params.resize(this->numParams());
 
     this->_storeTree(0, types.data(), indices.data(), params.data());
@@ -151,9 +150,41 @@ class SDFTree {
     return {types, indices, params};
   }
 
+  static std::tuple<std::vector<SDFType>, std::vector<int>, std::vector<float>>
+  SerializeTrees(const std::vector<SDFTree>& trees) {
+    std::vector<SDFType> types;
+    std::vector<int> indices;
+    std::vector<float> params;
+
+    for (const auto& tree : trees) {
+      const auto indexOffset = params.size();
+      const auto [treeTypes, treeIndices, treeParams] = tree.serialize();
+      for (const auto x : treeTypes)
+        types.push_back(x);
+      for (const auto x : treeIndices)
+        indices.push_back(indexOffset + x);
+      for (const auto x : treeParams)
+        params.push_back(x);
+    }
+
+    return {types, indices, params};
+  }
+
   static SDFTree CreateTreeFromPrefix(
       const std::vector<std::shared_ptr<SDF>>& prefix) {
     return std::get<0>(_CreateTreeFromPrefix(prefix));
+  }
+
+  static std::vector<SDFTree> CreateTreesFromPrefix(
+      const std::vector<std::shared_ptr<SDF>>& prefix) {
+    std::vector<SDFTree> trees;
+    int i = 0;
+    while (i < prefix.size()) {
+      const auto [tree, size] = _CreateTreeFromPrefix(prefix, i);
+      trees.push_back(tree);
+      i += size;
+    }
+    return trees;
   }
 
  private:
@@ -399,21 +430,22 @@ sf::Image renderSDFs(
   image.create(width, height);
 
   // clang-format off
-  const auto tree = SDFTree::CreateTreeFromPrefix({
-    std::make_shared<SDFUnion>(),
+  const auto trees = SDFTree::CreateTreesFromPrefix({
     std::make_shared<SDFSphere>(
       1,
-      Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{1, 0, 2}).inverse()
+      Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{1, 0, 3}).inverse()
     ),
     std::make_shared<SDFSphere>(
       1,
-      Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{-1, 0, 2}).inverse()
+      Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{-1, 0, 3}).inverse()
     ),
   });
 
-  tree.print();
+  for (const auto& tree : trees) {
+    tree.print();
+  }
 
-  const auto [treeShapeTypes, treeParametersIndex, shapeParameters] = tree.serialize();
+  const auto [treeShapeTypes, treeParametersIndex, shapeParameters] = SDFTree::SerializeTrees(trees);
   fmt::println("treeShapeTypes");
   for (auto x : treeShapeTypes) fmt::print("{} ", static_cast<int>(x));
   fmt::println("");
@@ -487,6 +519,7 @@ sf::Image renderSDFs(
           const auto b = std::acos(direction_sphere.z()) / M_PI;
           const auto textureU = int(a * earth.getSize().x);
           const auto textureV = int(b * earth.getSize().y);
+
           const auto matteColor = earth.getPixel(
               std::clamp(textureU, 0, int(earth.getSize().x - 1)),
               std::clamp(textureV, 0, int(earth.getSize().y - 1)));
@@ -495,7 +528,7 @@ sf::Image renderSDFs(
               int(matteColor.g * angle),
               int(matteColor.b * angle));
           image.setPixel(u, height - v - 1, color);
-        } else if (SDFType::Cylinder) {
+        } else if (objectType == SDFType::Cylinder) {
           const Eigen::Vector3f shapePosition{
               shapeParameters.at(parametersIndex),
               shapeParameters.at(parametersIndex + 1),
@@ -552,8 +585,8 @@ sf::Image createGradientImage(int width, int height) {
 }
 
 int main() {
-  const int width = 64;
-  const int height = 64;
+  const int width = 128;
+  const int height = 128;
 
   sf::RenderWindow window(sf::VideoMode(width, height), "SFML Demo");
 

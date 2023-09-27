@@ -4,6 +4,7 @@
 #include <sophus/se3.hpp>
 #include <sophus/so3.hpp>
 
+#include <chrono>
 #include <iostream>
 #include <optional>
 
@@ -99,6 +100,9 @@ struct SDFSphere : public SDF {
   sf::Image* texture;
 };
 struct SDFCylinder : public SDF {
+  SDFCylinder(float radius, float height, const Sophus::SE3f& T_self_world)
+      : radius(radius), height(height), T_self_world(T_self_world) {}
+
   virtual SDFType type() const override { return SDFType::Cylinder; }
   virtual int numOperands() const override { return 0; }
   virtual int numParams() const override { return 16 + 2; }
@@ -304,21 +308,14 @@ std::pair<int, float> signedDistance(
     const Eigen::Vector3f position_sphere =
         (T_sphere_world * position.homogeneous()).hnormalized();
 
-    // fmt::println(
-    //     "position: {} {} {}",
-    //     position_sphere.x(),
-    //     position_sphere.y(),
-    //     position_sphere.z());
-
     return {1, position_sphere.norm() - radius};
   } else if (shapeType == SDFType::Cylinder) {
-    const Eigen::Vector3f shapePosition{
-        shapeParameters.at(parametersIndex),
-        shapeParameters.at(parametersIndex + 1),
-        shapeParameters.at(parametersIndex + 2)};
-    const auto radius = shapeParameters.at(parametersIndex + 3);
-    const auto height = shapeParameters.at(parametersIndex + 4);
-    const Eigen::Vector3f deltaPosition = position - shapePosition;
+    const Eigen::Matrix4f T_sphere_world = Eigen::Map<const Eigen::Matrix4f>(
+        shapeParameters.data() + parametersIndex);
+    const auto radius = shapeParameters.at(parametersIndex + 16);
+    const auto height = shapeParameters.at(parametersIndex + 17);
+    const Eigen::Vector3f deltaPosition =
+        (T_sphere_world * position.homogeneous()).hnormalized();
 
     return {
         1,
@@ -433,12 +430,13 @@ sf::Image renderSDFs(
   const auto trees = SDFTree::CreateTreesFromPrefix({
     std::make_shared<SDFSphere>(
       1,
-      Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{1, 0, 3}).inverse()
-    ),
-    std::make_shared<SDFSphere>(
-      1,
-      Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{-1, 0, 3}).inverse()
-    ),
+      Sophus::SE3f(Sophus::SO3f::rotY(M_PI/4) * Sophus::SO3f::rotX(M_PI / 2), Eigen::Vector3f{0, 0, 2}).inverse()
+    )
+    // ,
+    // std::make_shared<SDFSphere>(
+    //   1,
+    //   Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{-1, 0, 3}).inverse()
+    // ),
   });
 
   for (const auto& tree : trees) {
@@ -455,6 +453,8 @@ sf::Image renderSDFs(
   fmt::println("shapeParameters");
   for (auto x : shapeParameters) fmt::print("{} ", x);
   fmt::println("\n");
+
+  fmt::println("Image size: {} {}", earth.getSize().x, earth.getSize().y);
 
 #if 0
   const std::vector<int> treeShapeTypes = {
@@ -546,7 +546,9 @@ sf::Image renderSDFs(
 
           const auto textureU = int(a * earth.getSize().x);
           const auto textureV = int(b * earth.getSize().y);
-          const auto matteColor = earth.getPixel(textureU, textureV);
+          const auto matteColor = earth.getPixel(
+              std::clamp(textureU, 0, int(earth.getSize().x - 1)),
+              std::clamp(textureV, 0, int(earth.getSize().y - 1)));
           angle = 1;
           const auto color = sf::Color(
               int(matteColor.r * angle),
@@ -585,14 +587,13 @@ sf::Image createGradientImage(int width, int height) {
 }
 
 int main() {
-  const int width = 128;
-  const int height = 128;
+  const int width = 512;
+  const int height = 512;
 
   sf::RenderWindow window(sf::VideoMode(width, height), "SFML Demo");
 
   sf::Image earth;
-  earth.loadFromFile(
-      "/Users/static/Documents/code/sdfs/build/assets/earth.jpg");
+  earth.loadFromFile("/Users/static/Documents/code/sdfs/build/assets/moon.jpg");
 
   // clang-format off
   Eigen::Matrix3f K;
@@ -602,10 +603,13 @@ int main() {
   // clang-format on
 
   constexpr auto AngleStep = 10.0f;
-  float angle = -30;
+  float angle = -20;
   sf::Texture texture;
+  const auto start = std::chrono::high_resolution_clock::now();
   texture.loadFromImage(
       renderSDFs(width, height, K, angle / 180 * M_PI, earth));
+  const auto end = std::chrono::high_resolution_clock::now();
+  fmt::println("{} seconds", (end - start).count() / 1e9);
   sf::Sprite sprite(texture);
 
   while (window.isOpen()) {

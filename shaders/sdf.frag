@@ -2,28 +2,16 @@
 
 const float PI = 3.1415926535897932384626433832795;
 
-layout(std140) uniform TreeShapeTypes {
-    int treeShapeTypes[1000];
-};
-
-layout(std140) uniform TreeParametersIndex {
-    int treeParametersIndex[1000];
-};
-
-layout(std140) uniform ShapeParameters {
-    vec4 shapeParameters[1000];
-};
-
-uniform sampler2D sdfTexture;
-
-
 out vec4 FragColor;
 
-uniform vec2 resolution;
 uniform int numElements;
 uniform mat4 T_world_camera;
 uniform mat3 K;
 uniform vec3 light_world;
+uniform int treeShapeTypes[10];
+uniform int treeParametersIndex[10];
+uniform vec4 shapeParameters[500];
+uniform sampler2D sdfTexture;
 
 const int MaximumSteps = 64;
 const float MaximumDistance = 1e6;
@@ -142,7 +130,7 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
     return result;
 }
 
-void main() {    
+void main() {
     mat3 R_world_camera = mat3(
         T_world_camera[0].xyz,
         T_world_camera[1].xyz,

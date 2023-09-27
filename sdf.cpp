@@ -359,6 +359,7 @@ int main() {
   glCompileShader(fragmentShader);
 
   GLuint shaderProgram = glCreateProgram();
+
   glAttachShader(shaderProgram, vertexShader);
   glAttachShader(shaderProgram, fragmentShader);
   glLinkProgram(shaderProgram);
@@ -397,14 +398,27 @@ int main() {
   glBindVertexArray(0);
 
   glUseProgram(shaderProgram);
-  GLint resolutionLoc = glGetUniformLocation(shaderProgram, "resolution");
   GLint numElementsLoc = glGetUniformLocation(shaderProgram, "numElements");
   GLint intrinsicsLoc = glGetUniformLocation(shaderProgram, "K");
   GLint T_world_cameraLoc =
       glGetUniformLocation(shaderProgram, "T_world_camera");
   GLint light_worldLoc = glGetUniformLocation(shaderProgram, "light_world");
+  GLint treeShapeTypesLoc =
+      glGetUniformLocation(shaderProgram, "treeShapeTypes");
+  GLint treeParametersIndexLoc =
+      glGetUniformLocation(shaderProgram, "treeParametersIndex");
   GLint shapeParametersLoc =
-      glGetUniformLocation(shaderProgram, "shapeParameters_test");
+      glGetUniformLocation(shaderProgram, "shapeParameters");
+
+  fmt::println(
+      "{} {} {} {} {} {} {}",
+      numElementsLoc,
+      intrinsicsLoc,
+      T_world_cameraLoc,
+      light_worldLoc,
+      treeShapeTypesLoc,
+      treeParametersIndexLoc,
+      shapeParametersLoc);
 
   const auto trees =
       SDFTree::CreateTreesFromPrefix({std::make_shared<SDFSphere>(
@@ -413,54 +427,17 @@ int main() {
               Sophus::SO3f::rotY(M_PI / 4) * Sophus::SO3f::rotX(M_PI / 2),
               Eigen::Vector3f{0, 0, 0})
               .inverse())});
-  auto [treeShapeTypes, treeParametersIndex, shapeParameters] =
+  auto [treeShapeTypesEnum, treeParametersIndex, shapeParameters] =
       SDFTree::SerializeTrees(trees);
-
-  GLuint treeShapeTypesBuffer;
-  glGenBuffers(1, &treeShapeTypesBuffer);
-  glBindBuffer(GL_UNIFORM_BUFFER, treeShapeTypesBuffer);
-  glBufferData(
-      GL_UNIFORM_BUFFER,
-      sizeof(int) * treeShapeTypes.size(),
-      treeShapeTypes.data(),
-      GL_STATIC_DRAW);
-  glBindBufferBase(GL_UNIFORM_BUFFER, 1, treeShapeTypesBuffer);
-  glBindBuffer(GL_UNIFORM_BUFFER, 0);
-
-  GLuint treeParametersIndexBuffer;
-  glGenBuffers(1, &treeParametersIndexBuffer);
-  glBindBuffer(GL_UNIFORM_BUFFER, treeParametersIndexBuffer);
-  glBufferData(
-      GL_UNIFORM_BUFFER,
-      sizeof(int) * treeParametersIndex.size(),
-      treeParametersIndex.data(),
-      GL_STATIC_DRAW);
-  glBindBufferBase(GL_UNIFORM_BUFFER, 2, treeParametersIndexBuffer);
-  glBindBuffer(GL_UNIFORM_BUFFER, 0);
-
-  GLuint shapeParametersBuffer;
-  glGenBuffers(1, &shapeParametersBuffer);
-  glBindBuffer(GL_UNIFORM_BUFFER, shapeParametersBuffer);
-  glBufferData(
-      GL_UNIFORM_BUFFER,
-      sizeof(float) * shapeParameters.size(),
-      shapeParameters.data(),
-      GL_STATIC_DRAW);
-  glBindBufferBase(GL_UNIFORM_BUFFER, 3, shapeParametersBuffer);
-  glBindBuffer(GL_UNIFORM_BUFFER, 0);
-
-  glUniformBlockBinding(
-      shaderProgram,
-      glGetUniformBlockIndex(shaderProgram, "TreeShapeTypes"),
-      1);
-  glUniformBlockBinding(
-      shaderProgram,
-      glGetUniformBlockIndex(shaderProgram, "TreeParametersIndex"),
-      2);
-  glUniformBlockBinding(
-      shaderProgram,
-      glGetUniformBlockIndex(shaderProgram, "ShapeParameters"),
-      3);
+  // multiple of 4 padding
+  while (shapeParameters.size() % 4 != 0) {
+    shapeParameters.push_back(0);
+  }
+  // cast to int
+  std::vector<int> treeShapeTypes;
+  for (const auto x : treeShapeTypesEnum) {
+    treeShapeTypes.push_back(static_cast<int>(x));
+  }
 
   const auto start = std::chrono::high_resolution_clock::now();
   while (!glfwWindowShouldClose(window)) {
@@ -491,15 +468,19 @@ int main() {
         Eigen::Vector3f{1, 0, 0}.normalized();
 
     // Set uniforms
-    glUniform2f(resolutionLoc, width, height);
-    glUniform1f(numElementsLoc, 1);
+    glUniform1i(numElementsLoc, treeShapeTypes.size());
     glUniformMatrix3fv(intrinsicsLoc, 1, GL_FALSE, K.data());
     glUniformMatrix4fv(
         T_world_cameraLoc, 1, GL_FALSE, matT_world_camera.data());
     glUniform3fv(light_worldLoc, 1, light_world.data());
-    shapeParameters[0] = 1234;
-    glUniform1fv(
-        shapeParametersLoc, shapeParameters.size(), shapeParameters.data());
+    glUniform1iv(
+        treeShapeTypesLoc, treeShapeTypes.size(), treeShapeTypes.data());
+    glUniform1iv(
+        treeParametersIndexLoc,
+        treeParametersIndex.size(),
+        treeParametersIndex.data());
+    glUniform4fv(
+        shapeParametersLoc, shapeParameters.size() / 4, shapeParameters.data());
 
     glBindTexture(GL_TEXTURE_2D, texture);
 

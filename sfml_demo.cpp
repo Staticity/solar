@@ -438,6 +438,7 @@ sf::Image renderSDFs(
     //   Sophus::SE3f( Sophus::SO3f::rotX(-M_PI/2), Eigen::Vector3f{-1, 0, 3}).inverse()
     // ),
   });
+  const auto [treeShapeTypes, treeParametersIndex, shapeParameters] = SDFTree::SerializeTrees(trees);
 
   for (const auto& tree : trees) {
     tree.print();

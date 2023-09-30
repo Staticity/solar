@@ -28,14 +28,14 @@ class SolarSystemPose {
         body.c_str(), ephemerisTime, "J2000", "NONE", "EARTH", bodyState, &lt);
 
     const std::string& fixedFrame = "IAU_" + body;
-    SpiceDouble rotationMatrix[3][3];
-    pxform_c("J2000", fixedFrame.c_str(), ephemerisTime, rotationMatrix);
-    SpiceDouble quaternion[4];
-    m2q_c(rotationMatrix, quaternion);
+    SpiceDouble R_J2000_body[3][3];
+    pxform_c(fixedFrame.c_str(), "J2000", ephemerisTime, R_J2000_body);
+    SpiceDouble q_J2000_body[4];
+    m2q_c(R_J2000_body, q_J2000_body);
 
     return Sophus::SE3d(
         Eigen::Quaterniond(
-            quaternion[0], quaternion[1], quaternion[2], quaternion[3]),
+            q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]),
         Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
   }
 
@@ -421,24 +421,29 @@ int main() {
     Sophus::SE3d T_J2000_sun = solar.T_J2000_body("SUN", et);
     Sophus::SE3d T_J2000_moon = solar.T_J2000_body("MOON", et);
 
-    static int x = 0;
-    if (x++ == 0) {
-      std::cout << "Earth" << std::endl;
-      std::cout << T_J2000_earth.matrix() << std::endl;
-      std::cout << "Moon" << std::endl;
-      std::cout << T_J2000_moon.matrix() << std::endl;
-      std::cout << "Sun" << std::endl;
-      std::cout << T_J2000_sun.matrix() << std::endl;
-    }
+    // static int x = 0;
+    // // if (x++ == 0)
+    // {
+    //   std::cout << "Earth" << std::endl;
+    //   std::cout << T_J2000_earth.translation() << std::endl;
+    //   std::cout << "Moon" << std::endl;
+    //   std::cout << T_J2000_moon.translation() << std::endl;
+    //   std::cout << "Sun" << std::endl;
+    //   std::cout << T_J2000_sun.translation() << std::endl;
+    // }
 
     // T_J2000_sun.translation() - T_J2000_earth.translation();
     // T_J2000_moon.translation() - T_J2000_earth.translation();
     // T_J2000_earth.translation() - T_J2000_earth.translation();
 
-    earth.T_self_world =
-        (T_J2000_earth.inverse() * T_J2000_earth).cast<float>();
-    sun.T_self_world = (T_J2000_sun.inverse() * T_J2000_earth).cast<float>();
-    moon.T_self_world = (T_J2000_moon.inverse() * T_J2000_earth).cast<float>();
+    earth.T_self_world = T_J2000_earth.inverse().cast<float>();
+    sun.T_self_world = T_J2000_sun.inverse().cast<float>();
+    moon.T_self_world = T_J2000_moon.inverse().cast<float>();
+    // earth.T_self_world =
+    //     (T_J2000_earth.inverse() * T_J2000_earth).cast<float>();
+    // sun.T_self_world = (T_J2000_sun.inverse() * T_J2000_earth).cast<float>();
+    // moon.T_self_world = (T_J2000_moon.inverse() *
+    // T_J2000_earth).cast<float>();
 
     // Set intrinsics matrix
     // clang-format off
@@ -455,8 +460,7 @@ int main() {
 
     Camera camera{
         .T_world_self =
-            Sophus::SE3f(
-                Sophus::SO3f::rotY(M_PI / 4), Eigen::Vector3f{0, 0, 12})
+            Sophus::SE3f(Sophus::SO3f::rotY(0), Eigen::Vector3f{0, 0, 500})
                 .inverse(),
         .K = K};
 

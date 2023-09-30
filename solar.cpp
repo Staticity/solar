@@ -1,15 +1,17 @@
 #include <Eigen/Eigen>
+#include <fstream>
 #include <iostream>
+#include <memory>
+#include <sstream>
+#include <vector>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <Sophus/se3.hpp>
 #include <fmt/format.h>
-
-#include <fstream>
-#include <memory>
-#include <sstream>
-#include <vector>
 #include "SpiceUsr.h"
+#include "imgui/backends/imgui_impl_glfw.h"
+#include "imgui/backends/imgui_impl_opengl3.h"
+#include "imgui/imgui.h"
 
 #include <sophus/se3.hpp>
 #include "includes/aaplus/AA+.h"
@@ -56,6 +58,20 @@ class SolarSystemPose {
       unload_c(path.c_str());
     }
   }
+};
+
+Sophus::SE3f LookAt(
+    const Eigen::Vector3f& position_world,
+    const Eigen::Vector3f& target_world,
+    const Eigen::Vector3f& upHint) {
+  const Eigen::Vector3f forward = (target_world - position_world).normalized();
+  const Eigen::Vector3f right = (upHint.cross(forward)).normalized();
+  const Eigen::Vector3f up = (forward.cross(right)).normalized();
+  Eigen::Matrix3f R;
+  R.col(0) = right;
+  R.col(1) = up;
+  R.col(2) = forward;
+  return Sophus::SE3f(R, position_world);
 };
 
 static void error_callback(int error, const char* description) {
@@ -156,6 +172,10 @@ GLuint CreateTexture(unsigned char r, unsigned char g, unsigned char b) {
 }
 
 GLuint CreateTexture(const std::string& filepath) {
+  if (!std::filesystem::exists(filepath)) {
+    fmt::println("Couldn't find texture path: {}", filepath);
+    exit(-1);
+  }
   // load and generate the texture
   int width, height, nrChannels;
   unsigned char* data =
@@ -276,12 +296,13 @@ int main() {
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
   GLFWwindow* window =
-      glfwCreateWindow(800, 600, "Raymarching SDF", NULL, NULL);
+      glfwCreateWindow(1280, 600, "Raymarching SDF", NULL, NULL);
   if (!window) {
     std::cerr << "Failed to create GLFW window" << std::endl;
     glfwTerminate();
     return -1;
   }
+  glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_TRUE);
 
   glfwMakeContextCurrent(window);
   glfwSetKeyCallback(window, keyCallback);
@@ -324,6 +345,19 @@ int main() {
   glBindBuffer(GL_ARRAY_BUFFER, 0);
   glBindVertexArray(0);
 
+  // Initialize ImGUI
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.ConfigFlags |=
+      ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
+  io.ConfigFlags |=
+      ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // IF using Docking Branch
+  ImGui::StyleColorsDark();
+  ImGui_ImplGlfw_InitForOpenGL(window, true);
+  ImGui_ImplOpenGL3_Init("#version 330");
+
   std::vector<std::filesystem::path> shaderFilepaths = {
       "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
       "/Users/static/Documents/code/sdfs/shaders/single_object.frag"};
@@ -342,24 +376,29 @@ int main() {
       .type = 1,
       .T_self_world = {Sophus::SO3f(), Eigen::Vector3f{0, 0, 0}},
       .parameters = {695.7},
-      .textureId = CreateTexture(
-          "/Users/static/Documents/code/sdfs/build/assets/sun.jpg"),
+      .textureId =
+          CreateTexture("/Users/static/Documents/code/sdfs/assets/sun.jpg"),
       .isMatte = true};
   SDFObject earth{
       .type = 1,
       .T_self_world = {Sophus::SO3f(), Eigen::Vector3f(0, 0, 0)},
       .parameters = {6.371009},
-      .textureId = CreateTexture(
-          "/Users/static/Documents/code/sdfs/build/assets/earth.jpg"),
+      .textureId =
+          CreateTexture("/Users/static/Documents/code/sdfs/assets/earth.jpg"),
       .isMatte = false};
   SDFObject moon{
       .type = 1,
       .T_self_world = {Sophus::SO3f(), Eigen::Vector3f{0, 0, 0}},
       .parameters = {1.7374},
-      .textureId = CreateTexture(
-          "/Users/static/Documents/code/sdfs/build/assets/moon.jpg"),
+      .textureId =
+          CreateTexture("/Users/static/Documents/code/sdfs/assets/moon.jpg"),
       .isMatte = false};
 
+  float daysPerSecond = .1;
+  Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
+
+  // earth, up, moon, sun
+  bool lookat[4] = {false, false, false, false};
   auto start = std::chrono::high_resolution_clock::now();
   glEnable(GL_DEPTH_TEST);
   SolarSystemPose solar;
@@ -381,33 +420,39 @@ int main() {
               "/Users/static/Documents/code/sdfs/shaders/single_object.frag"));
     }
 
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    // ImGUI window creation
+    ImGui::Begin("Controls");
+    ImGui::Text("Time:");
+    ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 1);
+    // Text that appears in the window
+    ImGui::Text("Camera Position:");
+    // Slider that appears in the window
+    ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
+    ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
+    ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1000.0f);
+
+    const char* lookatOptions[] = {"Earth", "Up", "Moon", "Sun"};
+    static int currentLook = 0;
+    ImGui::Combo(
+        "Look Directions",
+        &currentLook,
+        lookatOptions,
+        IM_ARRAYSIZE(lookatOptions));
+
+    // Ends the window
+    ImGui::End();
+    // ImGui::Begin("DockSpace Demo"); // Create a new window
+    // ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+    // ImGui::DockSpace(dockspace_id);
+    // ImGui::End();
+
     // Calculate current time
     const auto timeSecs =
         (start - std::chrono::high_resolution_clock::now()).count() / 1e9;
-
-    // Convert the date to Julian Date
-    // long year = 2023;
-    // long month = 9;
-    // double day = 29;
-    // double hour = 0.0;
-    // double minute = 0.0;
-    // double second = 0.0;
-    // CAADate JD(CAADate::DateToJD(year, month, day, true) + timeSecs * 1,
-    // true); auto aaSunPosition =
-    // CAASun::EclipticRectangularCoordinatesJ2000(JD, true); Eigen::Vector3f
-    // sun_world = megameter_to_au *
-    //     Eigen::Vector3f{aaSunPosition.X, aaSunPosition.Y, aaSunPosition.Z};
-
-    // // Get the geocentric position of the Moon
-    // const Eigen::Vector3f moon_world =
-    //     MoonEclipticRectangularCoordinatesJ2000(JD) * 1e-3;
-
-    // sun.T_self_world.translation() = sun_world;
-    // moon.T_self_world.translation() = moon_world;
-    // const double apparentGST =
-    // CAASidereal::ApparentGreenwichSiderealTime(JD); const double rotationRads
-    // = (apparentGST / 24.0) * 2 * M_PI; earth.T_self_world = Sophus::SE3f(
-    //     Sophus::SO3f::rotY(rotationRads), Eigen::Vector3f{0, 0, 0});
 
     // Define the UTC time for which you want the data
     ConstSpiceChar* utc = "2021-09-30T12:00:00";
@@ -416,7 +461,7 @@ int main() {
     SpiceDouble et;
     str2et_c(utc, &et);
 
-    et += timeSecs * 60 * 60 * 24;
+    et += timeSecs * 60 * 60 * 24 * daysPerSecond;
     Sophus::SE3d T_J2000_earth = solar.T_J2000_body("EARTH", et);
     Sophus::SE3d T_J2000_sun = solar.T_J2000_body("SUN", et);
     Sophus::SE3d T_J2000_moon = solar.T_J2000_body("MOON", et);
@@ -458,34 +503,78 @@ int main() {
             0,       0,            1;
     // clang-format on
 
+    Sophus::SE3f T_earth_camera;
+
+    const std::string chosenLook = lookatOptions[currentLook];
+    const auto R = earth.parameters.at(0);
+    const auto lat = lla.x();
+    const auto lon = lla.y();
+    const auto alt = lla.z() / 1e3;
+    Eigen::Vector3f camera_earth = {
+        (R + alt) * std::cos(lat) * std::cos(lon),
+        (R + alt) * std::sin(lat),
+        (R + alt) * std::cos(lat) * std::sin(lon)};
+    if (chosenLook == "Earth") {
+      T_earth_camera = LookAt(
+          camera_earth, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitY());
+    } else if (chosenLook == "Up") {
+      T_earth_camera =
+          LookAt(camera_earth, camera_earth * 1.1, Eigen::Vector3f::UnitY());
+    } else if (chosenLook == "Moon") {
+      const Sophus::SE3f T_earth_moon =
+          earth.T_self_world * moon.T_self_world.inverse();
+      T_earth_camera = LookAt(
+          camera_earth, T_earth_moon.translation(), Eigen::Vector3f::UnitY());
+    } else if (chosenLook == "Sun") {
+      const Sophus::SE3f T_earth_sun =
+          earth.T_self_world * sun.T_self_world.inverse();
+      T_earth_camera = LookAt(
+          camera_earth, T_earth_sun.translation(), Eigen::Vector3f::UnitY());
+    }
+
+    // fmt::println(
+    //     "camera: {} {} {}, earth: {} {} {}, radius: {}",
+    //     camera_earth.x(),
+    //     camera_earth.y(),
+    //     camera_earth.z(),
+    //     earth.T_self_world.translation().x(),
+    //     earth.T_self_world.translation().y(),
+    //     earth.T_self_world.translation().z(),
+    //     earth.parameters.at(0));
+
     Camera camera{
-        .T_world_self =
-            Sophus::SE3f(Sophus::SO3f::rotY(0), Eigen::Vector3f{0, 0, 500})
-                .inverse(),
-        .K = K};
+        .T_world_self = earth.T_self_world.inverse() * T_earth_camera, .K = K};
 
     Light lighting{.T_self_world = sun.T_self_world};
 
     glUseProgram(shaderProgram);
-    // SetObjectUniforms(shaderProgram, camera, lighting, sun);
-    // // Draw full-screen quad
-    // glBindVertexArray(VAO);
-    // glDrawArrays(GL_TRIANGLES, 0, 6);
-    // glBindVertexArray(0);
-    SetObjectUniforms(shaderProgram, camera, lighting, moon);
-    // Draw full-screen quad
-    glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-    SetObjectUniforms(shaderProgram, camera, lighting, earth);
-    // Draw full-screen quad
+    SetObjectUniforms(shaderProgram, camera, lighting, sun);
     glBindVertexArray(VAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
 
+    SetObjectUniforms(shaderProgram, camera, lighting, moon);
+    glBindVertexArray(VAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    SetObjectUniforms(shaderProgram, camera, lighting, earth);
+    glBindVertexArray(VAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    // Renders the ImGUI elements
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
     glfwSwapBuffers(window);
     glfwPollEvents();
   }
+
+  // Deletes all ImGUI instances
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplGlfw_Shutdown();
+  ImGui::DestroyContext();
 
   glDeleteVertexArrays(1, &VAO);
   glDeleteBuffers(1, &VBO);

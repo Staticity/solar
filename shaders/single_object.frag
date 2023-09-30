@@ -21,7 +21,7 @@ out vec4 FragColor;
 
 // Constants
 const float PI = 3.1415926535897932384626433832795;
-const int MaximumSteps = 64;
+const int MaximumSteps = 128;
 const float MaximumDistance = 1e6;
 const float MinimumDistance = 1e-3;
 
@@ -51,8 +51,8 @@ SDInfo signedDistance(vec3 position_world) {
         // UV calculation
         vec3 position_dir = normalize(position_shape);
         info.uv = vec2(
-            0.5 + atan(position_dir.y, position_dir.x) / (2.0 * PI),
-            0.5 - asin(position_dir.z) / PI);
+            0.5 + atan(position_dir.z, position_dir.x) / (2.0 * PI),
+            0.5 - asin(position_dir.y) / PI);
     } else if (shapeType == 2) {
         float radius = shapeParameters[0].x;
         float height = shapeParameters[0].y;
@@ -124,7 +124,6 @@ void main() {
         T_world_camera[2].xyz
     );
     vec3 t_world_camera = T_world_camera[3].xyz;
-    t_world_camera=vec3(0,0,-500);
     vec3 ray_camera = normalize(inverse(K) * vec3(gl_FragCoord.xy, 1.0));
 
     vec3 p = t_world_camera + R_world_camera * ray_camera;
@@ -144,9 +143,10 @@ void main() {
 
         // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
 
-        FragColor = textureColor * max(.1, intensity);
+        FragColor = textureColor * max(.5, intensity);
         gl_FragDepth = length(t_world_camera - result.position) / MaximumDistance;
-        // FragColor *= result.steps / float(MaximumSteps);
+        // if (result.steps > 10)
+            // FragColor *= result.steps / float(MaximumSteps);
         // FragColor *= 1 - int(shadow.hit);
         // FragColor = vec4((1 + result.normal) / 2, 1);
         // FragColor = vec4(shadow.hit, shadow.hit, shadow.hit, 1);

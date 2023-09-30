@@ -4,17 +4,19 @@ const float PI = 3.1415926535897932384626433832795;
 
 out vec4 FragColor;
 
+uniform int isMatte;
 uniform int numElements;
 uniform mat4 T_world_camera;
 uniform mat3 K;
 uniform vec3 light_world;
-uniform int treeShapeTypes[10];
-uniform int treeParametersIndex[10];
+uniform int treeShapeTypes[100];
+uniform int treeParametersIndex[100];
 uniform vec4 shapeParameters[500];
 uniform sampler2D sdfTexture;
 
 const int MaximumSteps = 64;
 const float MaximumDistance = 1e6;
+const float MinimumDistance = 1e-3;
 
 struct SDInfo {
     int size;
@@ -28,6 +30,7 @@ struct SDFHit {
     vec3 normal;
     vec3 position;
     vec2 uv;
+    int steps;
 };
 
 SDInfo signedDistance(vec3 position_world, int treeIndex) {
@@ -50,9 +53,8 @@ SDInfo signedDistance(vec3 position_world, int treeIndex) {
         info.dist = length(position_shape) - radius;
         vec3 position_dir = normalize(position_shape);
         info.uv = vec2(
-            (atan(position_dir.y, position_dir.x) + PI) / (2 * PI),
-            acos(position_dir.z) / PI
-        );
+            0.5 + atan(position_dir.z, position_dir.x) / (2.0 * PI),
+            0.5 - asin(position_dir.y) / PI);
     } else if (shapeType == 2) {
         mat4 T_shape_world = mat4(
             shapeParameters[pi + 0],
@@ -80,7 +82,7 @@ SDInfo signedDistance(vec3 position_world, int treeIndex) {
 }
 
 vec3 sdfNormal(vec3 position_world, int treeIndex) {
-    float eps = 1e-6;
+    float eps = 1e-3;
 
     float fx = signedDistance(position_world + vec3(eps, 0, 0), treeIndex).dist;
     float fy = signedDistance(position_world + vec3(0, eps, 0), treeIndex).dist;
@@ -113,12 +115,14 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
             }
         }
 
-        if (closestDistance < 1e-3) {
+        if (closestDistance < MinimumDistance) {
             SDFHit result;
             result.hit = true;
             result.normal = sdfNormal(position_world, closestObjectIndex);
             result.position = position_world;
             result.uv = uv;
+            result.steps = it;
+
             return result;
         }
 
@@ -127,6 +131,7 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
     
     SDFHit result;
     result.hit = false;
+    result.steps = MaximumSteps;
     return result;
 }
 
@@ -144,12 +149,21 @@ void main() {
         FragColor = vec4(result.uv, 0, 1.0);
         vec4 textureColor = texture(sdfTexture, result.uv);
         float intensity = max(0, dot(light_world, result.normal));
+        if (isMatte != 0) {
+            intensity = 1;
+        }
 
-        FragColor = textureColor * max(intensity, .05);
-        // FragColor = vec4(1,1,1,1);
-        gl_FragDepth = length(t_world_camera - result.position);
+        // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
+
+        FragColor = textureColor * max(intensity, .1);
+        // FragColor *= result.steps / float(MaximumSteps);
+        // FragColor *= 1 - int(shadow.hit);
+        // FragColor = vec4((1 + result.normal) / 2, 1);
+        // FragColor = vec4(shadow.hit, shadow.hit, shadow.hit, 1);
+        // FragColor = vec4(result.uv, 0, 1);
+        gl_FragDepth = length(t_world_camera - result.position) / MaximumDistance;
     } else {
         FragColor = vec4(0,0,0,1);
-        gl_FragDepth = MaximumDistance;
+        gl_FragDepth = 1.0;
     }
 }

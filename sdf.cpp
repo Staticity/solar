@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <vector>
 
@@ -40,6 +41,8 @@ void keyCallback(
   if (action == GLFW_PRESS && key == GLFW_KEY_P) {
     usePerspective = !usePerspective;
   }
+  if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
 }
 
 enum SDFType : int {
@@ -267,6 +270,125 @@ class SDFTree {
   std::vector<SDFTree> children;
 };
 
+GLuint CreateTexture(
+    unsigned char* data, int width, int height, int nrChannels) {
+  GLuint texture;
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+
+  // set the texture wrapping/filtering options (on the currently bound texture
+  // object)
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glTexParameteri(
+      GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+  if (data) {
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        (nrChannels == 1) ? GL_RED : GL_RGB,
+        width,
+        height,
+        0,
+        (nrChannels == 1) ? GL_RED : GL_RGB,
+        GL_UNSIGNED_BYTE,
+        data);
+    // Cover grayscale case
+    if (nrChannels == 1) {
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+    }
+    glGenerateMipmap(GL_TEXTURE_2D);
+  } else {
+    return -1;
+  }
+
+  return texture;
+}
+
+GLuint CreateTexture(unsigned char r, unsigned char g, unsigned char b) {
+  std::vector<unsigned char> data = {r, g, b};
+  return CreateTexture(data.data(), 1, 1, 3);
+}
+
+GLuint CreateTexture(const std::string& filepath) {
+  // load and generate the texture
+  int width, height, nrChannels;
+  unsigned char* data =
+      stbi_load(filepath.c_str(), &width, &height, &nrChannels, 0);
+
+  const auto texture = CreateTexture(data, width, height, nrChannels);
+  stbi_image_free(data);
+  return texture;
+}
+
+GLuint CreateShaderProgram() {
+  const std::string vertexShaderSource =
+      readFile("/Users/static/Documents/code/sdfs/shaders/sdf.vert");
+  const std::string fragmentShaderSource =
+      readFile("/Users/static/Documents/code/sdfs/shaders/sdf.frag");
+  const char* pVertexShaderSource = vertexShaderSource.c_str();
+  const char* pFragmentShaderSource = fragmentShaderSource.c_str();
+
+  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+  glShaderSource(vertexShader, 1, &pVertexShaderSource, NULL);
+  glCompileShader(vertexShader);
+
+  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(fragmentShader, 1, &pFragmentShaderSource, NULL);
+  glCompileShader(fragmentShader);
+
+  GLuint shaderProgram = glCreateProgram();
+
+  glAttachShader(shaderProgram, vertexShader);
+  glAttachShader(shaderProgram, fragmentShader);
+  glLinkProgram(shaderProgram);
+
+  glDeleteShader(vertexShader);
+  glDeleteShader(fragmentShader);
+
+  return shaderProgram;
+}
+
+struct Lighting {
+  bool isMatte;
+};
+
+struct TexturedObject {
+  TexturedObject(
+      std::shared_ptr<SDF> object,
+      GLuint texture,
+      const Lighting& lighting = {.isMatte = false})
+      : parent(nullptr), object(object), texture(texture), lighting(lighting) {
+    std::vector<SDFType> sdfTypes;
+    std::tie(sdfTypes, indices, params) =
+        SDFTree::CreateTreeFromPrefix({object}).serialize();
+
+    for (const auto x : sdfTypes) {
+      types.push_back(static_cast<int>(x));
+    }
+    while (params.size() % 4 != 0) {
+      params.push_back(0);
+    }
+  }
+
+  void setParent(TexturedObject* parent) { this->parent = parent; }
+
+  TexturedObject* parent;
+
+  std::shared_ptr<SDF> object;
+  GLuint texture;
+
+  std::vector<int> types;
+  std::vector<int> indices;
+  std::vector<float> params;
+
+  Lighting lighting;
+};
+
 int main() {
   glfwSetErrorCallback(error_callback);
 
@@ -298,74 +420,8 @@ int main() {
     return -1;
   }
 
-  unsigned int texture;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_2D, texture);
-  // set the texture wrapping/filtering options (on the currently bound texture
-  // object)
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameteri(
-      GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  // load and generate the texture
-  int width, height, nrChannels;
-  unsigned char* data = stbi_load(
-      "/Users/static/Documents/code/sdfs/build/assets/moon.jpg",
-      &width,
-      &height,
-      &nrChannels,
-      0);
-  fmt::println("w: {}, h: {}, ch: {}", width, height, nrChannels);
-  if (data) {
-    glTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        (nrChannels == 1) ? GL_RED : GL_RGB,
-        width,
-        height,
-        0,
-        (nrChannels == 1) ? GL_RED : GL_RGB,
-        GL_UNSIGNED_BYTE,
-        data);
-    if (nrChannels == 1) {
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
-    }
-    glGenerateMipmap(GL_TEXTURE_2D);
-  } else {
-    std::cout << "Failed to load texture" << std::endl;
-  }
-  stbi_image_free(data);
-
   const GLubyte* version = glGetString(GL_VERSION);
   printf("OpenGL Version: %s\n", version);
-
-  // Earlier in your code
-  const std::string vertexShaderSource =
-      readFile("/Users/static/Documents/code/sdfs/shaders/sdf.vert");
-  const std::string fragmentShaderSource =
-      readFile("/Users/static/Documents/code/sdfs/shaders/sdf.frag");
-  const char* pVertexShaderSource = vertexShaderSource.c_str();
-  const char* pFragmentShaderSource = fragmentShaderSource.c_str();
-
-  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vertexShader, 1, &pVertexShaderSource, NULL);
-  glCompileShader(vertexShader);
-
-  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fragmentShader, 1, &pFragmentShaderSource, NULL);
-  glCompileShader(fragmentShader);
-
-  GLuint shaderProgram = glCreateProgram();
-
-  glAttachShader(shaderProgram, vertexShader);
-  glAttachShader(shaderProgram, fragmentShader);
-  glLinkProgram(shaderProgram);
-
-  glDeleteShader(vertexShader);
-  glDeleteShader(fragmentShader);
 
   float vertices[] = {
       -1.0f,
@@ -397,7 +453,9 @@ int main() {
   glBindBuffer(GL_ARRAY_BUFFER, 0);
   glBindVertexArray(0);
 
+  const auto shaderProgram = CreateShaderProgram();
   glUseProgram(shaderProgram);
+  GLint isMatteLoc = glGetUniformLocation(shaderProgram, "isMatte");
   GLint numElementsLoc = glGetUniformLocation(shaderProgram, "numElements");
   GLint intrinsicsLoc = glGetUniformLocation(shaderProgram, "K");
   GLint T_world_cameraLoc =
@@ -410,84 +468,111 @@ int main() {
   GLint shapeParametersLoc =
       glGetUniformLocation(shaderProgram, "shapeParameters");
 
-  fmt::println(
-      "{} {} {} {} {} {} {}",
-      numElementsLoc,
-      intrinsicsLoc,
-      T_world_cameraLoc,
-      light_worldLoc,
-      treeShapeTypesLoc,
-      treeParametersIndexLoc,
-      shapeParametersLoc);
+  auto start = std::chrono::high_resolution_clock::now();
+  const auto sunTexture = // CreateTexture(255, 0, 0);
+      CreateTexture("/Users/static/Documents/code/sdfs/build/assets/sun.jpg");
+  const auto moonTexture = // CreateTexture(0, 255, 0);
+      CreateTexture("/Users/static/Documents/code/sdfs/build/assets/moon.jpg");
+  const auto earthTexture = // CreateTexture(0, 0, 255);
+      CreateTexture("/Users/static/Documents/code/sdfs/build/assets/earth.jpg");
+  const auto end = std::chrono::high_resolution_clock::now();
+  fmt::println("Loaded textures in {} seconds", (end - start).count() / 1e9);
 
-  const auto trees =
-      SDFTree::CreateTreesFromPrefix({std::make_shared<SDFSphere>(
-          1,
-          Sophus::SE3f(
-              Sophus::SO3f::rotY(M_PI / 4) * Sophus::SO3f::rotX(M_PI / 2),
-              Eigen::Vector3f{0, 0, 0})
-              .inverse())});
-  auto [treeShapeTypesEnum, treeParametersIndex, shapeParameters] =
-      SDFTree::SerializeTrees(trees);
-  // multiple of 4 padding
-  while (shapeParameters.size() % 4 != 0) {
-    shapeParameters.push_back(0);
-  }
-  // cast to int
-  std::vector<int> treeShapeTypes;
-  for (const auto x : treeShapeTypesEnum) {
-    treeShapeTypes.push_back(static_cast<int>(x));
-  }
+  const auto sunIndex = 0;
+  std::vector<TexturedObject> spheres = {
+      {std::make_shared<SDFSphere>(
+           1400, Sophus::SE3f(Sophus::SO3f(), Eigen::Vector3f{-150000, 0, 0})),
+       sunTexture,
+       Lighting{.isMatte = true}},
+      {std::make_shared<SDFSphere>(
+           12.576,
+           //  .1,
+           Sophus::SE3f(
+               Sophus::SO3f::rotX(-M_PI / 2.0) * Sophus::SO3f::rotY(M_PI / 2),
+               //  Sophus::SO3f::rotZ(22.5 * M_PI / 180.0),
+               Eigen::Vector3f{0, 0, 0})),
+       earthTexture,
+       Lighting{.isMatte = false}},
+      {std::make_shared<SDFSphere>(
+           3.475, Sophus::SE3f(Sophus::SO3f(), Eigen::Vector3f{384.4, 0, 0})),
+       moonTexture,
+       Lighting{.isMatte = false}} //,
+      // {std::make_shared<SDFCylinder>(
+      //      .1,
+      //      15,
+      //      Sophus::SE3f(
+      //          Sophus::SO3f::rotZ(22.5 * M_PI / 180.0),
+      //          Eigen::Vector3f::Zero())),
+      //  CreateTexture(255, 0, 0),
+      //  Lighting{.isMatte = true}},
+      // {std::make_shared<SDFCylinder>(
+      //      1,
+      //      15,
+      //      Sophus::SE3f(Sophus::SO3f::rotX(M_PI / 2),
+      //      Eigen::Vector3f::Zero())),
+      //  CreateTexture(0, 255, 0),
+      //  Lighting{.isMatte = true}},
+      // {std::make_shared<SDFCylinder>(
+      //      1,
+      //      15,
+      //      Sophus::SE3f(Sophus::SO3f::rotZ(M_PI / 2),
+      //      Eigen::Vector3f::Zero())),
+      //  CreateTexture(0, 0, 255),
+      //  Lighting{.isMatte = true}}
+  };
 
-  const auto start = std::chrono::high_resolution_clock::now();
+  start = std::chrono::high_resolution_clock::now();
+  glEnable(GL_DEPTH_TEST);
   while (!glfwWindowShouldClose(window)) {
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glUseProgram(shaderProgram);
-
+    // Set intrinsics matrix
+    // clang-format off
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
-    // clang-format off
+    const auto f = std::min(width, height);
     Eigen::Matrix3f K;
     K << 
-      width / 2,          0,  width / 2,
-              0, width / 2, height / 2,
-              0,          0,          1;
+      f / 2.0,       0,  width / 2.0,
+            0, f / 2.0, height / 2.0,
+            0,       0,            1;
     // clang-format on
 
+    // Calculate current time
     const auto timeSecs =
         (start - std::chrono::high_resolution_clock::now()).count() / 1e9;
 
+    // Set camera pose
     Sophus::SE3f T_camera_world(
-        Sophus::SO3f::rotY(0 * timeSecs * M_PI / 4), Eigen::Vector3f{0, 0, 2});
+        Sophus::SO3f::rotY(timeSecs * M_PI / 4), Eigen::Vector3f{0, 0, 30});
     const auto matT_world_camera = T_camera_world.inverse().matrix();
 
-    const Eigen::Vector3f light_world =
-        Sophus::SO3f::rotY(timeSecs * M_PI / 4) *
-        Eigen::Vector3f{1, 0, 0}.normalized();
+    const Eigen::Vector3f light_world = Eigen::Vector3f{1, 0, 0};
+    // -spheres[0].sphere.T_self_world.inverse().translation().normalized();
 
-    // Set uniforms
-    glUniform1i(numElementsLoc, treeShapeTypes.size());
-    glUniformMatrix3fv(intrinsicsLoc, 1, GL_FALSE, K.data());
-    glUniformMatrix4fv(
-        T_world_cameraLoc, 1, GL_FALSE, matT_world_camera.data());
-    glUniform3fv(light_worldLoc, 1, light_world.data());
-    glUniform1iv(
-        treeShapeTypesLoc, treeShapeTypes.size(), treeShapeTypes.data());
-    glUniform1iv(
-        treeParametersIndexLoc,
-        treeParametersIndex.size(),
-        treeParametersIndex.data());
-    glUniform4fv(
-        shapeParametersLoc, shapeParameters.size() / 4, shapeParameters.data());
+    glUseProgram(shaderProgram);
+    for (const auto& sphere : spheres) {
+      glUniformMatrix3fv(intrinsicsLoc, 1, GL_FALSE, K.data());
+      glUniformMatrix4fv(
+          T_world_cameraLoc, 1, GL_FALSE, matT_world_camera.data());
+      glUniform3fv(light_worldLoc, 1, light_world.data());
+      glUniform1i(isMatteLoc, sphere.lighting.isMatte ? 1 : 0);
 
-    glBindTexture(GL_TEXTURE_2D, texture);
+      glUniform1i(numElementsLoc, sphere.types.size());
+      glUniform1iv(treeShapeTypesLoc, sphere.types.size(), sphere.types.data());
+      glUniform1iv(
+          treeParametersIndexLoc, sphere.indices.size(), sphere.indices.data());
+      glUniform4fv(
+          shapeParametersLoc, sphere.params.size() / 4, sphere.params.data());
 
-    // Draw full-screen quad
-    glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
+      glBindTexture(GL_TEXTURE_2D, sphere.texture);
+
+      // Draw full-screen quad
+      glBindVertexArray(VAO);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glBindVertexArray(0);
+    }
 
     glfwSwapBuffers(window);
     glfwPollEvents();

@@ -11,6 +11,10 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# Location of SPICE headers and libraries
+set(SPICE_DIR "/Users/static/Downloads/cspice")  # Replace with the path where you extracted SPICE
+include_directories(${SPICE_DIR}/include)
+
 # Find required packages
 find_package(SFML 2.6 COMPONENTS graphics window system REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -21,10 +25,20 @@ find_package(glfw3 REQUIRED)
 
 # Include directories
 include_directories(includes)
+include_directories(includes/aaplus)  # Add AA+ include directory
+
+# Include ImGui
+include_directories(${CMAKE_SOURCE_DIR}/imgui)
 
 # Specify the source file and its executable output
-# add_executable(main sfml_demo.cpp)
-add_executable(main sdf.cpp "includes/stb_image.h")
+file(GLOB AAPLUS_SOURCES includes/aaplus/*.cpp)
+list(FILTER AAPLUS_SOURCES EXCLUDE REGEX "AATest.cpp$")
+
+# Add ImGui source files to the build
+file(GLOB IMGUI_SOURCES imgui/*.cpp imgui/backends/imgui_impl_glfw.cpp imgui/backends/imgui_impl_opengl3.cpp)
+
+# add_executable(main test_spice.cpp "includes/stb_image.h" ${AAPLUS_SOURCES} ${IMGUI_SOURCES})
+add_executable(main solar.cpp "includes/stb_image.h" ${AAPLUS_SOURCES} ${IMGUI_SOURCES})
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address -g -fno-omit-frame-pointer")
 
@@ -36,4 +50,7 @@ target_link_libraries(main PRIVATE
     Sophus::Sophus
     GLEW::GLEW
     glfw
+    # Linking SPICE library
+    ${SPICE_DIR}/lib/cspice.a
+    # Add any required ImGui linking if necessary
 )

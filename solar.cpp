@@ -221,12 +221,12 @@ GLuint CreateShaderProgram(
 }
 
 struct Camera {
-  Sophus::SE3f T_world_self;
+  Sophus::SE3d T_world_self;
   Eigen::Matrix3f K;
 };
 
 struct Light {
-  Sophus::SE3f T_self_world;
+  Sophus::SE3d T_self_world;
   //   Eigen::Vector3f color;
 };
 
@@ -249,22 +249,23 @@ void SetObjectUniforms(
 
   // Camera parameters
   const Eigen::Matrix3f& K = camera.K;
-  const Eigen::Matrix4f T_world_camera = camera.T_world_self.matrix();
+  const Eigen::Matrix4f T_shape_camera =
+      (object.T_self_world * camera.T_world_self).matrix().cast<float>();
   glUniformMatrix3fv(
       glGetUniformLocation(shader, "K"), 1, false, camera.K.data());
   glUniformMatrix4fv(
-      glGetUniformLocation(shader, "T_world_camera"),
+      glGetUniformLocation(shader, "T_shape_camera"),
       1,
       false,
-      T_world_camera.data());
+      T_shape_camera.data());
 
   // Lighting parameters
-  const Eigen::Matrix4f T_light_world = lighting.T_self_world.matrix();
-  glUniformMatrix4fv(
-      glGetUniformLocation(shader, "T_light_world"),
-      1,
-      false,
-      T_light_world.data());
+  const Eigen::Vector3f light_shape =
+      (object.T_self_world * lighting.T_self_world.inverse())
+          .translation()
+          .cast<float>();
+  glUniform3fv(
+      glGetUniformLocation(shader, "light_shape"), 1, light_shape.data());
   glUniform1i(glGetUniformLocation(shader, "isMatte"), object.isMatte);
 
   // Object parameters
@@ -580,11 +581,9 @@ int main() {
     // std::cout << "T_earth_caemra\n" << T_earth_camera.log() << std::endl;
 
     Camera camera{
-        .T_world_self =
-            (earth.T_self_world.inverse() * T_earth_camera).cast<float>(),
-        .K = K};
+        .T_world_self = earth.T_self_world.inverse() * T_earth_camera, .K = K};
 
-    Light lighting{.T_self_world = sun.T_self_world.cast<float>()};
+    Light lighting{.T_self_world = sun.T_self_world};
 
     // std::cout << "camera:\n" << camera.T_world_self.log() << std::endl;
     // std::cout << "lighting:\n" << lighting.T_self_world.log() << std::endl;

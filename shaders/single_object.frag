@@ -6,11 +6,11 @@ uniform mat4 T_world_camera;
 
 // Light parameters
 uniform int isMatte;
-uniform mat4 T_light_world;
+uniform vec3 light_shape;
 
 // Shape parameters
 uniform int shapeType;
-uniform mat4 T_shape_world;
+uniform mat4 T_shape_camera;
 uniform vec4 shapeParameters[10];
 
 // Shape texture
@@ -125,8 +125,8 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
 }
 
 void main() {
-    mat4 T_shape_camera = T_shape_world * T_world_camera;
-    vec3 light_shape = (T_shape_world * inverse(T_light_world))[3].xyz;
+    // mat4 T_shape_camera = T_shape_world * T_world_camera;
+    // vec3 light_shape = (T_shape_world * inverse(T_light_world))[3].xyz;
 
     mat3 R_shape_camera = mat3(
         T_shape_camera[0].xyz,
@@ -136,7 +136,6 @@ void main() {
     vec3 t_shape_camera = T_shape_camera[3].xyz;
     vec3 ray_camera = normalize(inverse(K) * vec3(gl_FragCoord.xy, 1.0));
     SDFHit result = raymarch(t_shape_camera, R_shape_camera * ray_camera);
-
 
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);

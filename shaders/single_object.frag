@@ -75,7 +75,7 @@ SDInfo signedDistance(vec3 position_world) {
 
 vec3 sdfNormal(vec3 position_world) {
     if (shapeType == 1) {
-        return normalize(position_world);
+        return normalize((T_shape_world * vec4(position_world, 1)).xyz);
     }
 
     float eps = 1e-3;

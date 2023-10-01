@@ -403,7 +403,7 @@ int main() {
           CreateTexture("/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
       .isMatte = false};
 
-  float daysPerSecond = .1;
+  float daysPerSecond = 0; // .1;
   float cameraFieldOfView = 1.0f / 180.0 * M_PI;
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
@@ -574,6 +574,12 @@ int main() {
         .K = K};
 
     Light lighting{.T_self_world = sun.T_self_world.cast<float>()};
+
+    // std::cout << "camera:\n" << camera.T_world_self.log() << std::endl;
+    // std::cout << "lighting:\n" << lighting.T_self_world.log() << std::endl;
+    // std::cout << (lighting.T_self_world * camera.T_world_self).log()
+    //           << std::endl
+    //           << std::endl;
 
     glUseProgram(shaderProgram);
     SetObjectUniforms(shaderProgram, camera, lighting, sun);

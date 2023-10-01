@@ -6,7 +6,7 @@ uniform mat4 T_world_camera;
 
 // Light parameters
 uniform int isMatte;
-uniform vec3 light_world;
+uniform mat4 T_light_world;
 
 // Shape parameters
 uniform int shapeType;
@@ -37,6 +37,7 @@ struct SDFHit {
     vec2 uv;
     int steps;
     float nearest;
+    float travelled;
 };
 
 SDInfo signedDistance(vec3 position_world) {
@@ -44,7 +45,7 @@ SDInfo signedDistance(vec3 position_world) {
 
     if (shapeType == 1) {
         float radius = shapeParameters[0].x;
-        vec3 position_shape = (T_shape_world * vec4(position_world, 1.0)).xyz;
+        vec3 position_shape = vec4(position_world, 1.0).xyz;
 
         info.dist = length(position_shape) - radius;
 
@@ -56,7 +57,7 @@ SDInfo signedDistance(vec3 position_world) {
     } else if (shapeType == 2) {
         float radius = shapeParameters[0].x;
         float height = shapeParameters[0].y;
-        vec3 position_shape = (T_shape_world * vec4(position_world, 1.0)).xyz;
+        vec3 position_shape = vec4(position_world, 1.0).xyz;
         info.dist = max(length(position_shape.xz) - radius, abs(position_shape.y) - height);
 
         // UV calculation
@@ -78,7 +79,7 @@ vec3 sdfNormal(vec3 position_world) {
     //     return normalize((T_shape_world * vec4(position_world, 1)).xyz);
     // }
 
-    float eps = length(position_world) * MinimumDistanceRatio;
+    float eps = 1e-3;// length(position_world) * MinimumDistanceRatio;
 
     float fx = signedDistance(position_world + vec3(eps, 0, 0)).dist;
     float fy = signedDistance(position_world + vec3(0, eps, 0)).dist;
@@ -109,6 +110,7 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
             result.position = position_world;
             result.uv = info.uv;
             result.steps = it + 1;
+            result.travelled = t;
 
             return result;
         }
@@ -118,27 +120,29 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
     
     result.hit = false;
     result.steps = MaximumSteps;
+    result.travelled = t;
     return result;
 }
 
 void main() {
-    mat3 R_world_camera = mat3(
-        T_world_camera[0].xyz,
-        T_world_camera[1].xyz,
-        T_world_camera[2].xyz
+    mat4 T_shape_camera = T_shape_world * T_world_camera;
+    mat4 T_light_shape = T_light_world * inverse(T_shape_world);
+
+    mat3 R_shape_camera = mat3(
+        T_shape_camera[0].xyz,
+        T_shape_camera[1].xyz,
+        T_shape_camera[2].xyz
     );
-    vec3 t_world_camera = T_world_camera[3].xyz;
+    vec3 t_shape_camera = T_shape_camera[3].xyz;
     vec3 ray_camera = normalize(inverse(K) * vec3(gl_FragCoord.xy, 1.0));
-
-    vec3 p = t_world_camera + R_world_camera * ray_camera;
-
-    SDFHit result = raymarch(t_world_camera, R_world_camera * ray_camera);
+    SDFHit result = raymarch(t_shape_camera, R_shape_camera * ray_camera);
 
 
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);
-        vec3 light_direction = -normalize(light_world - result.position);
+        vec3 light_direction = normalize((-T_light_shape * vec4(result.position, 1)).xyz);
         float intensity = max(0, dot(light_direction, result.normal));
+
 
         // If it's Matte, then no lighting affects it. It's always bright
         if (isMatte != 0) {
@@ -148,7 +152,8 @@ void main() {
         // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
 
         FragColor = textureColor * max(.1, intensity);
-        gl_FragDepth = length(t_world_camera - result.position) / MaximumDistance;
+        // FragColor = vec4(light_direction, 1);
+        gl_FragDepth = length(t_shape_camera - result.position) / MaximumDistance;
         // if (result.steps > 10)
             // FragColor *= result.steps / float(MaximumSteps);
         // FragColor *= 1 - int(shadow.hit);

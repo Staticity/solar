@@ -76,10 +76,10 @@ SDInfo signedDistance(vec3 position_world) {
 
 vec3 sdfNormal(vec3 position_world) {
     // if (shapeType == 1) {
-    //     return normalize((T_shape_world * vec4(position_world, 1)).xyz);
+    //     return -normalize(vec4(position_world, 1).xyz);
     // }
 
-    float eps = 1e-3;// length(position_world) * MinimumDistanceRatio;
+    float eps = 1e-5;// length(position_world) * MinimumDistanceRatio;
 
     float fx = signedDistance(position_world + vec3(eps, 0, 0)).dist;
     float fy = signedDistance(position_world + vec3(0, eps, 0)).dist;
@@ -126,7 +126,7 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
 
 void main() {
     mat4 T_shape_camera = T_shape_world * T_world_camera;
-    mat4 T_light_shape = T_light_world * inverse(T_shape_world);
+    vec3 light_shape = (T_shape_world * inverse(T_light_world))[3].xyz;
 
     mat3 R_shape_camera = mat3(
         T_shape_camera[0].xyz,
@@ -140,7 +140,7 @@ void main() {
 
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);
-        vec3 light_direction = normalize((-T_light_shape * vec4(result.position, 1)).xyz);
+        vec3 light_direction = normalize(light_shape);
         float intensity = max(0, dot(light_direction, result.normal));
 
 

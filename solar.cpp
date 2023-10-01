@@ -384,7 +384,7 @@ int main() {
   SDFObject sun{
       .type = 1,
       .T_self_world = {},
-      .parameters = {695.7},
+      .parameters = {696.34},
       .textureId =
           CreateTexture("/Users/static/Documents/code/sdfs/assets/8k_sun.jpg"),
       .isMatte = true};
@@ -434,7 +434,7 @@ int main() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     const char* lookatOptions[] = {
-        "Earth", "Horizon", "Moon", "Sun", "MoonOrbit"};
+        "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
     static int currentLook = 0;
 
     const char* originOptions[] = {"J2000", "Earth", "Moon", "Sun"};
@@ -451,8 +451,11 @@ int main() {
         "Origins", &currentOrigin, originOptions, IM_ARRAYSIZE(originOptions));
     ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
     ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
-    if (std::string(lookatOptions[currentLook]) == std::string("MoonOrbit")) {
+    if (std::string(lookatOptions[currentLook]) ==
+        std::string("EarthTopDown")) {
       ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e6f);
+    } else if (std::string(lookatOptions[currentLook]) == "SunTopDown") {
+      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 200e6f);
     } else {
       ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e4f);
     }
@@ -549,10 +552,18 @@ int main() {
           camera_earth,
           T_earth_sun.translation(),
           T_earth_sun.so3() * Eigen::Vector3d::UnitZ());
-    } else if (chosenLook == "MoonOrbit") {
+    } else if (chosenLook == "EarthTopDown") {
       T_earth_camera = LookAt(
-          Eigen::Vector3d::UnitZ() * (R + alt),
+          Eigen::Vector3d::UnitZ() * (earth.parameters.at(0) + alt),
           Eigen::Vector3d::Zero(),
+          Eigen::Vector3d::UnitY());
+    } else if (chosenLook == "SunTopDown") {
+      const Sophus::SE3d T_earth_sun =
+          earth.T_self_world * sun.T_self_world.inverse();
+
+      T_earth_camera = LookAt(
+          T_earth_sun * Eigen::Vector3d::UnitZ() * (alt),
+          T_earth_sun * Eigen::Vector3d::Zero(),
           Eigen::Vector3d::UnitY());
     }
 

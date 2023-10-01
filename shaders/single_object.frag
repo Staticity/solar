@@ -6,7 +6,7 @@ uniform mat4 T_world_camera;
 
 // Light parameters
 uniform int isMatte;
-uniform mat4 T_light_world;
+uniform vec3 light_world;
 
 // Shape parameters
 uniform int shapeType;
@@ -74,11 +74,11 @@ SDInfo signedDistance(vec3 position_world) {
 }
 
 vec3 sdfNormal(vec3 position_world) {
-    if (shapeType == 1) {
-        return normalize((T_shape_world * vec4(position_world, 1)).xyz);
-    }
+    // if (shapeType == 1) {
+    //     return normalize((T_shape_world * vec4(position_world, 1)).xyz);
+    // }
 
-    float eps = 1e-3;
+    float eps = length(position_world) * MinimumDistanceRatio;
 
     float fx = signedDistance(position_world + vec3(eps, 0, 0)).dist;
     float fy = signedDistance(position_world + vec3(0, eps, 0)).dist;
@@ -137,7 +137,7 @@ void main() {
 
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);
-        vec3 light_direction = normalize((-T_light_world * vec4(result.position, 1)).xyz);
+        vec3 light_direction = -normalize(light_world - result.position);
         float intensity = max(0, dot(light_direction, result.normal));
 
         // If it's Matte, then no lighting affects it. It's always bright
@@ -147,7 +147,7 @@ void main() {
 
         // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
 
-        FragColor = textureColor * max(0, intensity);
+        FragColor = textureColor * max(.1, intensity);
         gl_FragDepth = length(t_world_camera - result.position) / MaximumDistance;
         // if (result.steps > 10)
             // FragColor *= result.steps / float(MaximumSteps);

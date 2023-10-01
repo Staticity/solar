@@ -391,10 +391,11 @@ int main() {
       .T_self_world = {Sophus::SO3f(), Eigen::Vector3f{0, 0, 0}},
       .parameters = {1.7374},
       .textureId =
-          CreateTexture("/Users/static/Documents/code/sdfs/assets/moon.jpg"),
+          CreateTexture("/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
       .isMatte = false};
 
   float daysPerSecond = .1;
+  float cameraFieldOfView = 1.0f / 180.0 * M_PI;
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
   // earth, up, moon, sun
@@ -434,9 +435,11 @@ int main() {
     ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
     ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
     ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1000.0f);
+    ImGui::Text("Camera Settings:");
+    ImGui::SliderAngle("Vertical Field of View", &cameraFieldOfView, 0, 179.0f);
 
-    const char* lookatOptions[] = {"Earth", "Up", "Moon", "Sun"};
-    static int currentLook = 0;
+    const char* lookatOptions[] = {"Earth", "Horizon", "Moon", "Sun"};
+    static int currentLook = 2;
     ImGui::Combo(
         "Look Directions",
         &currentLook,
@@ -495,11 +498,11 @@ int main() {
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
-    const auto f = std::min(width, height);
+    const auto fy = (height / 2.0) / tan(cameraFieldOfView / 2.0);
     Eigen::Matrix3f K;
     K << 
-      f / 2.0,       0,  width / 2.0,
-            0, f / 2.0, height / 2.0,
+           fy,       0,  width / 2.0,
+            0,      fy, height / 2.0,
             0,       0,            1;
     // clang-format on
 
@@ -517,19 +520,25 @@ int main() {
     if (chosenLook == "Earth") {
       T_earth_camera = LookAt(
           camera_earth, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitY());
-    } else if (chosenLook == "Up") {
-      T_earth_camera =
-          LookAt(camera_earth, camera_earth * 1.1, Eigen::Vector3f::UnitY());
+    } else if (chosenLook == "Horizon") {
+      T_earth_camera = LookAt(
+          camera_earth,
+          camera_earth + Eigen::Vector3f::UnitX(),
+          camera_earth.normalized());
     } else if (chosenLook == "Moon") {
       const Sophus::SE3f T_earth_moon =
           earth.T_self_world * moon.T_self_world.inverse();
       T_earth_camera = LookAt(
-          camera_earth, T_earth_moon.translation(), Eigen::Vector3f::UnitY());
+          camera_earth,
+          T_earth_moon.translation(),
+          T_earth_moon.so3() * camera_earth.normalized());
     } else if (chosenLook == "Sun") {
       const Sophus::SE3f T_earth_sun =
           earth.T_self_world * sun.T_self_world.inverse();
       T_earth_camera = LookAt(
-          camera_earth, T_earth_sun.translation(), Eigen::Vector3f::UnitY());
+          camera_earth,
+          T_earth_sun.translation(),
+          T_earth_sun.so3() * Eigen::Vector3f::UnitZ());
     }
 
     // fmt::println(

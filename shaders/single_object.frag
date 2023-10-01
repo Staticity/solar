@@ -74,6 +74,10 @@ SDInfo signedDistance(vec3 position_world) {
 }
 
 vec3 sdfNormal(vec3 position_world) {
+    if (shapeType == 1) {
+        return normalize(position_world);
+    }
+
     float eps = 1e-3;
 
     float fx = signedDistance(position_world + vec3(eps, 0, 0)).dist;
@@ -143,7 +147,7 @@ void main() {
 
         // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
 
-        FragColor = textureColor * max(.5, intensity);
+        FragColor = textureColor * max(0, intensity);
         gl_FragDepth = length(t_world_camera - result.position) / MaximumDistance;
         // if (result.steps > 10)
             // FragColor *= result.steps / float(MaximumSteps);

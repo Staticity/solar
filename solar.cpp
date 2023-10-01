@@ -35,9 +35,17 @@ class SolarSystemPose {
     SpiceDouble q_J2000_body[4];
     m2q_c(R_J2000_body, q_J2000_body);
 
+    Eigen::Quaterniond J2000_body_xzy(
+        q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]);
+    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+    // clang-format off
+    // R << 1, 0, 0,
+    //      0, 0, -1,
+    //      0, 1, 0;
+    // clang-format on
+
     return Sophus::SE3d(
-        Eigen::Quaterniond(
-            q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]),
+        J2000_body_xzy.matrix() * R,
         Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
   }
 
@@ -377,7 +385,7 @@ int main() {
       .T_self_world = {Sophus::SO3f(), Eigen::Vector3f{0, 0, 0}},
       .parameters = {695.7},
       .textureId =
-          CreateTexture("/Users/static/Documents/code/sdfs/assets/sun.jpg"),
+          CreateTexture("/Users/static/Documents/code/sdfs/assets/8k_sun.jpg"),
       .isMatte = true};
   SDFObject earth{
       .type = 1,
@@ -424,6 +432,9 @@ int main() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    const char* lookatOptions[] = {
+        "Earth", "Horizon", "Moon", "Sun", "MoonOrbit"};
+    static int currentLook = 2;
 
     // ImGUI window creation
     ImGui::Begin("Controls");
@@ -434,12 +445,13 @@ int main() {
     // Slider that appears in the window
     ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
     ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
-    ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1000.0f);
+    if (std::string(lookatOptions[currentLook]) == std::string("MoonOrbit")) {
+      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e6f);
+    } else {
+      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e4f);
+    }
     ImGui::Text("Camera Settings:");
-    ImGui::SliderAngle("Vertical Field of View", &cameraFieldOfView, 0, 179.0f);
-
-    const char* lookatOptions[] = {"Earth", "Horizon", "Moon", "Sun"};
-    static int currentLook = 2;
+    ImGui::SliderAngle("Vertical Field of View", &cameraFieldOfView, 0, 120.0f);
     ImGui::Combo(
         "Look Directions",
         &currentLook,
@@ -458,7 +470,7 @@ int main() {
         (start - std::chrono::high_resolution_clock::now()).count() / 1e9;
 
     // Define the UTC time for which you want the data
-    ConstSpiceChar* utc = "2021-09-30T12:00:00";
+    ConstSpiceChar* utc = "2021-03-30T12:00:00";
 
     // Convert the UTC time to ephemeris time (TDB)
     SpiceDouble et;
@@ -469,31 +481,10 @@ int main() {
     Sophus::SE3d T_J2000_sun = solar.T_J2000_body("SUN", et);
     Sophus::SE3d T_J2000_moon = solar.T_J2000_body("MOON", et);
 
-    // static int x = 0;
-    // // if (x++ == 0)
-    // {
-    //   std::cout << "Earth" << std::endl;
-    //   std::cout << T_J2000_earth.translation() << std::endl;
-    //   std::cout << "Moon" << std::endl;
-    //   std::cout << T_J2000_moon.translation() << std::endl;
-    //   std::cout << "Sun" << std::endl;
-    //   std::cout << T_J2000_sun.translation() << std::endl;
-    // }
+    earth.T_self_world = (T_J2000_sun * T_J2000_earth.inverse()).cast<float>();
+    sun.T_self_world = (T_J2000_sun * T_J2000_sun.inverse()).cast<float>();
+    moon.T_self_world = (T_J2000_sun * T_J2000_moon.inverse()).cast<float>();
 
-    // T_J2000_sun.translation() - T_J2000_earth.translation();
-    // T_J2000_moon.translation() - T_J2000_earth.translation();
-    // T_J2000_earth.translation() - T_J2000_earth.translation();
-
-    earth.T_self_world = T_J2000_earth.inverse().cast<float>();
-    sun.T_self_world = T_J2000_sun.inverse().cast<float>();
-    moon.T_self_world = T_J2000_moon.inverse().cast<float>();
-    // earth.T_self_world =
-    //     (T_J2000_earth.inverse() * T_J2000_earth).cast<float>();
-    // sun.T_self_world = (T_J2000_sun.inverse() * T_J2000_earth).cast<float>();
-    // moon.T_self_world = (T_J2000_moon.inverse() *
-    // T_J2000_earth).cast<float>();
-
-    // Set intrinsics matrix
     // clang-format off
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
@@ -511,19 +502,19 @@ int main() {
     const std::string chosenLook = lookatOptions[currentLook];
     const auto R = earth.parameters.at(0);
     const auto lat = lla.x();
-    const auto lon = lla.y();
+    const auto lon = -lla.y();
     const auto alt = lla.z() / 1e3;
     Eigen::Vector3f camera_earth = {
         (R + alt) * std::cos(lat) * std::cos(lon),
-        (R + alt) * std::sin(lat),
-        (R + alt) * std::cos(lat) * std::sin(lon)};
+        (R + alt) * std::cos(lat) * std::sin(lon),
+        (R + alt) * std::sin(lat)};
     if (chosenLook == "Earth") {
       T_earth_camera = LookAt(
-          camera_earth, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitY());
+          camera_earth, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitZ());
     } else if (chosenLook == "Horizon") {
       T_earth_camera = LookAt(
           camera_earth,
-          camera_earth + Eigen::Vector3f::UnitX(),
+          camera_earth + Eigen::Vector3f::UnitY(),
           camera_earth.normalized());
     } else if (chosenLook == "Moon") {
       const Sophus::SE3f T_earth_moon =
@@ -531,7 +522,7 @@ int main() {
       T_earth_camera = LookAt(
           camera_earth,
           T_earth_moon.translation(),
-          T_earth_moon.so3() * camera_earth.normalized());
+          T_earth_moon.so3() * Eigen::Vector3f::UnitZ());
     } else if (chosenLook == "Sun") {
       const Sophus::SE3f T_earth_sun =
           earth.T_self_world * sun.T_self_world.inverse();
@@ -539,6 +530,11 @@ int main() {
           camera_earth,
           T_earth_sun.translation(),
           T_earth_sun.so3() * Eigen::Vector3f::UnitZ());
+    } else if (chosenLook == "MoonOrbit") {
+      T_earth_camera = LookAt(
+          Eigen::Vector3f::UnitZ() * (R + alt),
+          Eigen::Vector3f::Zero(),
+          Eigen::Vector3f::UnitY());
     }
 
     // fmt::println(
@@ -555,6 +551,9 @@ int main() {
         .T_world_self = earth.T_self_world.inverse() * T_earth_camera, .K = K};
 
     Light lighting{.T_self_world = sun.T_self_world};
+
+    const Eigen::Vector3f sun_earth =
+        (earth.T_self_world * sun.T_self_world.inverse()).translation();
 
     glUseProgram(shaderProgram);
     SetObjectUniforms(shaderProgram, camera, lighting, sun);

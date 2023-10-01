@@ -23,7 +23,7 @@ out vec4 FragColor;
 const float PI = 3.1415926535897932384626433832795;
 const int MaximumSteps = 128;
 const float MaximumDistance = 1e6;
-const float MinimumDistance = 1e-3;
+const float MinimumDistanceRatio = 1e-6;
 
 struct SDInfo {
     float dist;
@@ -51,8 +51,8 @@ SDInfo signedDistance(vec3 position_world) {
         // UV calculation
         vec3 position_dir = normalize(position_shape);
         info.uv = vec2(
-            0.5 + atan(position_dir.z, position_dir.x) / (2.0 * PI),
-            0.5 - asin(position_dir.y) / PI);
+            1 - (0.5 + atan(position_dir.y, position_dir.x) / (2.0 * PI)),
+            0.5 - asin(position_dir.z) / PI);
     } else if (shapeType == 2) {
         float radius = shapeParameters[0].x;
         float height = shapeParameters[0].y;
@@ -60,7 +60,7 @@ SDInfo signedDistance(vec3 position_world) {
         info.dist = max(length(position_shape.xz) - radius, abs(position_shape.y) - height);
 
         // UV calculation
-        vec2 position_dir_xz = normalize(position_shape.xz);
+        vec2 position_dir_xz = normalize(position_shape.xy);
         info.uv = vec2(
             (atan(position_dir_xz.y, position_dir_xz.x) + PI) / (2 * PI),
             length(position_shape.xz) / radius
@@ -103,7 +103,7 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
             result.nearest = info.dist;
         }
 
-        if (info.dist < MinimumDistance) {
+        if (info.dist < t * MinimumDistanceRatio) {
             result.hit = true;
             result.normal = sdfNormal(position_world);
             result.position = position_world;
@@ -154,7 +154,7 @@ void main() {
         // FragColor *= 1 - int(shadow.hit);
         // FragColor = vec4((1 + result.normal) / 2, 1);
         // FragColor = vec4(shadow.hit, shadow.hit, shadow.hit, 1);
-        // FragColor = vec4(result.uv, 0, 1);
+        // FragColor=vec4(0, result.uv.x, 1,1);
         // FragColor=vec4(0,1,0,1);
         // FragColor=vec4(result.steps/MaximumSteps,0,0,1);
     } else {

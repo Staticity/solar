@@ -20,6 +20,100 @@
 
 #include <GLFW/glfw3.h>
 
+std::string readFile(const char* filePath) {
+  std::string content;
+  std::ifstream fileStream(filePath, std::ios::in);
+
+  if (!fileStream.is_open()) {
+    std::cerr << "Could not read file " << filePath << ". File does not exist."
+              << std::endl;
+    return "";
+  }
+
+  std::stringstream sstr;
+  sstr << fileStream.rdbuf();
+  content = sstr.str();
+  fileStream.close();
+
+  return content;
+}
+
+class FilepathModifiedTracker {
+ public:
+  FilepathModifiedTracker(const std::filesystem::path& filepath)
+      : filepath_(filepath),
+        lastWrite_(std::filesystem::last_write_time(filepath)) {}
+
+  const std::filesystem::path path() const { return filepath_; }
+
+  bool wasModified() const {
+    return lastWrite_ == std::filesystem::last_write_time(filepath_);
+  }
+
+  void refresh() { lastWrite_ == std::filesystem::last_write_time(filepath_); }
+
+ private:
+  const std::filesystem::path filepath_;
+  std::filesystem::file_time_type lastWrite_;
+};
+
+class ReloadableShader {
+ public:
+  ReloadableShader(
+      const std::filesystem::path& vertexShaderFilepath,
+      const std::filesystem::path& fragmentShaderFilepath) {
+    loadShaders(vertexShaderFilepath, fragmentShaderFilepath);
+  }
+
+  void MaybeReload() {
+    if (vertexShader_.wasModified() || fragmentShader_.wasModified()) {
+      glDeleteProgram(shaderProgram_);
+      loadShaders(vertexShader_.path(), fragmentShader_.path());
+    }
+  }
+
+  void Use() { glUseProgram(shaderProgram_); }
+
+ private:
+  void loadShaders(
+      const std::filesystem::path& vertexShaderFilepath,
+      const std::filesystem::path& fragmentShaderFilepath) {
+    const std::string vertexShaderSource =
+        readFile(vertexShaderFilepath.c_str());
+    const std::string fragmentShaderSource =
+        readFile(fragmentShaderFilepath.c_str());
+
+    const char* pVertexShaderSource = vertexShaderSource.c_str();
+    const char* pFragmentShaderSource = fragmentShaderSource.c_str();
+
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &pVertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &pFragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+
+    shaderProgram_ = glCreateProgram();
+
+    glAttachShader(shaderProgram_, vertexShader);
+    glAttachShader(shaderProgram_, fragmentShader);
+    glLinkProgram(shaderProgram_);
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+  }
+
+  FilepathModifiedTracker vertexShader_;
+  FilepathModifiedTracker fragmentShader_;
+  GLuint shaderProgram_;
+};
+
+// class ReloadableTexture {
+//  public:
+//  private:
+// };
+
 class ImguiOpenGLRenderer {
  private:
   GLuint framebuffer;
@@ -190,24 +284,6 @@ void keyCallback(
     GLFWwindow* window, int key, int scancode, int action, int mods) {
   if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
     glfwSetWindowShouldClose(window, GLFW_TRUE);
-}
-
-std::string readFile(const char* filePath) {
-  std::string content;
-  std::ifstream fileStream(filePath, std::ios::in);
-
-  if (!fileStream.is_open()) {
-    std::cerr << "Could not read file " << filePath << ". File does not exist."
-              << std::endl;
-    return "";
-  }
-
-  std::stringstream sstr;
-  sstr << fileStream.rdbuf();
-  content = sstr.str();
-  fileStream.close();
-
-  return content;
 }
 
 GLuint CreateTexture(
@@ -454,6 +530,7 @@ int main() {
   for (const auto& shaderPath : shaderFilepaths) {
     lastModifiedTime[shaderPath] = std::filesystem::last_write_time(shaderPath);
   }
+  // stbi_set_flip_vertically_on_load(true);
 
   // Get the heliocentric position of Earth (which gives us the position of the
   // Sun relative to Earth)

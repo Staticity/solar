@@ -13,7 +13,6 @@
 #include "imgui/imgui.h"
 
 #include <sophus/se3.hpp>
-#include "includes/aaplus/AA+.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"

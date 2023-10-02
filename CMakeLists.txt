@@ -12,7 +12,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Location of SPICE headers and libraries
-set(SPICE_DIR "/Users/static/Downloads/cspice")  # Replace with the path where you extracted SPICE
+set(SPICE_DIR "cspice")  # Replace with the path where you extracted SPICE
 include_directories(${SPICE_DIR}/include)
 
 # Find required packages
@@ -29,10 +29,6 @@ include_directories(includes/aaplus)  # Add AA+ include directory
 
 # Include ImGui
 include_directories(${CMAKE_SOURCE_DIR}/imgui)
-
-# Specify the source file and its executable output
-file(GLOB AAPLUS_SOURCES includes/aaplus/*.cpp)
-list(FILTER AAPLUS_SOURCES EXCLUDE REGEX "AATest.cpp$")
 
 # Add ImGui source files to the build
 file(GLOB IMGUI_SOURCES imgui/*.cpp imgui/backends/imgui_impl_glfw.cpp imgui/backends/imgui_impl_opengl3.cpp)

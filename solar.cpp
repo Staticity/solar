@@ -193,29 +193,23 @@ class ReloadableTexture {
     texture_ = CreateTexture(filepath_.path());
   }
 
-  void maybeReload() {
+  void maybeReload() const {
     if (filepath_.wasModified()) {
       texture_ = CreateTexture(filepath_.path());
     }
   }
 
-  GLuint id() {
+  GLuint id() const {
     maybeReload();
     return texture_;
   }
 
  private:
-  GLuint texture_;
+  mutable GLuint texture_;
   FileModifiedTracker filepath_;
 };
 
 class ImguiOpenGLRenderer {
- private:
-  GLuint framebuffer;
-  GLuint texture;
-  GLuint depthStencilBuffer;
-  int width, height;
-
  public:
   ImguiOpenGLRenderer(int width, int height) : width(width), height(height) {
     // Create the framebuffer
@@ -251,7 +245,6 @@ class ImguiOpenGLRenderer {
         depthStencilBuffer);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-      // Handle error
       throw std::runtime_error("Framebuffer not complete");
     }
 
@@ -262,31 +255,6 @@ class ImguiOpenGLRenderer {
     glDeleteFramebuffers(1, &framebuffer);
     glDeleteTextures(1, &texture);
     glDeleteRenderbuffers(1, &depthStencilBuffer);
-  }
-
-  void resizeAttachments(int newWidth, int newHeight) {
-    // Resize color texture
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        GL_RGB,
-        newWidth,
-        newHeight,
-        0,
-        GL_RGB,
-        GL_UNSIGNED_BYTE,
-        NULL);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    // Resize depth and stencil renderbuffer
-    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer);
-    glRenderbufferStorage(
-        GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, newWidth, newHeight);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-    width = newWidth;
-    height = newHeight;
   }
 
   void render(
@@ -313,6 +281,37 @@ class ImguiOpenGLRenderer {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
   }
+
+ private:
+  void resizeAttachments(int newWidth, int newHeight) {
+    // Resize color texture
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGB,
+        newWidth,
+        newHeight,
+        0,
+        GL_RGB,
+        GL_UNSIGNED_BYTE,
+        NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // Resize depth and stencil renderbuffer
+    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer);
+    glRenderbufferStorage(
+        GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, newWidth, newHeight);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    width = newWidth;
+    height = newHeight;
+  }
+
+  GLuint framebuffer;
+  GLuint texture;
+  GLuint depthStencilBuffer;
+  int width, height;
 };
 
 class SPICEPose {
@@ -396,7 +395,7 @@ struct SDFObject {
   int type;
   Sophus::SE3d T_self_world;
   std::vector<float> parameters;
-  GLuint textureId;
+  ReloadableTexture texture;
 
   bool isMatte = false;
 };
@@ -448,7 +447,7 @@ void SetObjectUniforms(
       params.size() / 4,
       params.data());
 
-  glBindTexture(GL_TEXTURE_2D, object.textureId);
+  glBindTexture(GL_TEXTURE_2D, object.texture.id());
 }
 
 int main() {
@@ -482,9 +481,6 @@ int main() {
     std::cerr << "Failed to initialize GLEW" << std::endl;
     return -1;
   }
-
-  const GLubyte* version = glGetString(GL_VERSION);
-  printf("OpenGL Version: %s\n", version);
 
   float vertices[] = {
       -1.0f,
@@ -525,21 +521,15 @@ int main() {
   io.ConfigFlags |=
       ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // IF using Docking Branch
-  ImGui::StyleColorsDark();
+  // ImGui::StyleColorsDark();
   ImGui_ImplGlfw_InitForOpenGL(window, true);
-  ImGui_ImplOpenGL3_Init("#version 330");
+  ImGui_ImplOpenGL3_Init("#version 410");
 
-  std::vector<std::filesystem::path> shaderFilepaths = {
-      "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
-      "/Users/static/Documents/code/sdfs/shaders/single_object.frag"};
-  std::map<std::string, std::filesystem::file_time_type> lastModifiedTime;
+  stbi_set_flip_vertically_on_load(true);
+
   ReloadableShader shader(
       "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
       "/Users/static/Documents/code/sdfs/shaders/single_object.frag");
-  for (const auto& shaderPath : shaderFilepaths) {
-    lastModifiedTime[shaderPath] = std::filesystem::last_write_time(shaderPath);
-  }
-  // stbi_set_flip_vertically_on_load(true);
 
   // Get the heliocentric position of Earth (which gives us the position of the
   // Sun relative to Earth)
@@ -548,22 +538,22 @@ int main() {
       .type = 1,
       .T_self_world = {},
       .parameters = {696.34},
-      .textureId =
-          CreateTexture("/Users/static/Documents/code/sdfs/assets/8k_sun.jpg"),
+      .texture = ReloadableTexture(
+          "/Users/static/Documents/code/sdfs/assets/8k_sun.jpg"),
       .isMatte = true};
   SDFObject earth{
       .type = 1,
       .T_self_world = {},
       .parameters = {6.371009},
-      .textureId =
-          CreateTexture("/Users/static/Documents/code/sdfs/assets/earth.jpg"),
+      .texture = ReloadableTexture(
+          "/Users/static/Documents/code/sdfs/assets/earth.jpg"),
       .isMatte = false};
   SDFObject moon{
       .type = 1,
       .T_self_world = {},
       .parameters = {1.7374},
-      .textureId =
-          CreateTexture("/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
+      .texture = ReloadableTexture(
+          "/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
       .isMatte = false};
 
   float daysPerSecond = 2.5; // .1;
@@ -666,7 +656,7 @@ int main() {
 
     const std::string chosenLook = lookatOptions[currentLook];
     const auto R = earth.parameters.at(0);
-    const auto lat = lla.x();
+    const auto lat = -lla.x();
     const auto lon = -lla.y();
     const auto alt = lla.z() / 1e3;
     Eigen::Vector3d camera_earth = {

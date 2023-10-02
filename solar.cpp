@@ -356,6 +356,25 @@ class ImguiOpenGLRenderer {
   float height_;
 };
 
+class SpiceKernelPackage {
+ public:
+  SpiceKernelPackage(const std::vector<std::filesystem::path>& kernels)
+      : kernels_(kernels) {
+    for (const auto& path : kernels_) {
+      furnsh_c(path.c_str());
+    }
+  }
+
+  ~SpiceKernelPackage() {
+    for (const auto& path : kernels_) {
+      unload_c(path.c_str());
+    }
+  }
+
+ private:
+  std::vector<std::filesystem::path> kernels_;
+};
+
 class SPICEHelper {
  public:
   static SPICEHelper& getInstance() {
@@ -365,13 +384,39 @@ class SPICEHelper {
 
   static Sophus::SE3d T_J2000_body(
       const std::string& body, double ephemerisTime) {
-    return getInstance().T_J2000_body_impl(body, ephemerisTime);
+    SpiceDouble bodyState[6], lt;
+    spkezr_c(
+        body.c_str(), ephemerisTime, "J2000", "NONE", "MOON", bodyState, &lt);
+
+    const std::string& fixedFrame = "IAU_" + body;
+    SpiceDouble R_J2000_body[3][3];
+    pxform_c(fixedFrame.c_str(), "J2000", ephemerisTime, R_J2000_body);
+    SpiceDouble q_J2000_body[4];
+    m2q_c(R_J2000_body, q_J2000_body);
+
+    Eigen::Quaterniond J2000_body_xzy(
+        q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]);
+    return Sophus::SE3d(
+        J2000_body_xzy.matrix(),
+        Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
+  }
+
+  static Eigen::Vector3d Radii(const std::string& body) {
+    SpiceInt dim;
+    SpiceDouble radiiiKm[3];
+
+    bodvrd_c(body.c_str(), "RADII", 3, &dim, radiiiKm);
+    fmt::println(
+        "Body: {}, Radii: {} {} {}",
+        body,
+        radiiiKm[0],
+        radiiiKm[1],
+        radiiiKm[2]);
+
+    return Eigen::Vector3d(radiiiKm[0], radiiiKm[1], radiiiKm[2]) / 1e3;
   }
 
   static SpiceDouble EphemerisTimeNow() {
-    // Ensure the instance is instantitaed for kernels
-    (void)getInstance();
-
     // Get the current UTC time
     std::time_t t = std::time(nullptr);
     char utc_time[40];
@@ -385,14 +430,6 @@ class SPICEHelper {
     return et;
   }
 
-  // struct Date {
-  //   int year;
-  //   int month;
-  //   int day;
-  //   int hour;
-  //   int minute;
-  //   int second;
-  // };
   static std::string EphemerisTimeToDate(SpiceDouble et) {
     char utc_time[40];
     et2utc_c(et, "%Y-%m-%dT%H:%M:%S", 0, 40, utc_time);
@@ -430,56 +467,16 @@ class SPICEHelper {
   }
 
  private:
-  SPICEHelper() { init(); }
-  ~SPICEHelper() { cleanup(); }
-
-  // Non-static implementation for T_J2000_body, which will be called by the
-  // static wrapper
-  Sophus::SE3d T_J2000_body_impl(
-      const std::string& body, double ephemerisTime) {
-    fmt::println("SPICE Position");
-
-    SpiceDouble bodyState[6], lt;
-    spkezr_c(
-        body.c_str(), ephemerisTime, "J2000", "NONE", "EARTH", bodyState, &lt);
-
-    fmt::println("SPICE Orientation");
-    const std::string& fixedFrame = "IAU_" + body;
-    SpiceDouble R_J2000_body[3][3];
-    pxform_c(fixedFrame.c_str(), "J2000", ephemerisTime, R_J2000_body);
-    SpiceDouble q_J2000_body[4];
-    m2q_c(R_J2000_body, q_J2000_body);
-
-    Eigen::Quaterniond J2000_body_xzy(
-        q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]);
-    return Sophus::SE3d(
-        J2000_body_xzy.matrix(),
-        Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
-  }
-
-  const std::vector<std::string> kernelPaths_ = {
-      "/Users/static/Downloads/cspice/data/naif0012.tls",
-      "/Users/static/Downloads/cspice/data/de440.bsp",
-      "/Users/static/Downloads/cspice/data/pck00011.tpc"};
-
-  void init() {
-    for (const auto& path : kernelPaths_) {
-      furnsh_c(path.c_str());
-    }
-  }
-
-  void cleanup() {
-    for (const auto& path : kernelPaths_) {
-      unload_c(path.c_str());
-    }
-  }
-
-  // Delete copy and move constructors and assign operators
-  SPICEHelper(SPICEHelper const&) = delete; // Copy constructor
-  SPICEHelper(SPICEHelper&&) = delete; // Move constructor
-  SPICEHelper& operator=(SPICEHelper const&) = delete; // Copy assignment
-  SPICEHelper& operator=(SPICEHelper&&) = delete; // Move assignment
+  static const SpiceKernelPackage Kernels;
 };
+
+const SpiceKernelPackage SPICEHelper::Kernels = {{
+    std::filesystem::path(__FILE__).parent_path() /
+        "spice/kernels/naif0012.tls",
+    std::filesystem::path(__FILE__).parent_path() / "spice/kernels/de440.bsp",
+    std::filesystem::path(__FILE__).parent_path() /
+        "spice/kernels/pck00011.tpc",
+}};
 
 class PerPixelVAO {
  public:
@@ -704,36 +701,39 @@ void SetObjectUniforms(
 }
 
 int main() {
-  OpenGLWindow window("Solar System", 1980, 1080, true);
+  OpenGLWindow window("Solar System", 1980, 1080, false);
   PerPixelVAO vao;
 
   ReloadableShader shader(
-      "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
-      "/Users/static/Documents/code/sdfs/shaders/single_object.frag");
+      std::filesystem::path(__FILE__).parent_path() / "shaders/sdf.vert",
+      std::filesystem::path(__FILE__).parent_path() /
+          "shaders/single_object.frag");
 
-  // Get the heliocentric position of Earth (which gives us the position of the
-  // Sun relative to Earth)
+  // Get the heliocentric position of Earth (which gives us the position of
+  // the Sun relative to Earth)
+
+  // (void)SPICEHelper::T_J2000_body("MARS", 750578468.1823622);
 
   SDFObject sun{
       .type = 1,
       .T_self_world = {},
-      .parameters = {696.34},
+      .parameters = {float(SPICEHelper::Radii("SUN").mean())},
       .texture = ReloadableTexture(
-          "/Users/static/Documents/code/sdfs/assets/8k_sun.jpg"),
+          std::filesystem::path(__FILE__).parent_path() / "assets/8k_sun.jpg"),
       .isMatte = true};
   SDFObject earth{
       .type = 1,
       .T_self_world = {},
-      .parameters = {6.371009},
+      .parameters = {float(SPICEHelper::Radii("EARTH").mean())},
       .texture = ReloadableTexture(
-          "/Users/static/Documents/code/sdfs/assets/earth.jpg"),
+          std::filesystem::path(__FILE__).parent_path() / "assets/earth.jpg"),
       .isMatte = false};
   SDFObject moon{
       .type = 1,
       .T_self_world = {},
-      .parameters = {1.7374},
+      .parameters = {float(SPICEHelper::Radii("MOON").mean())},
       .texture = ReloadableTexture(
-          "/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
+          std::filesystem::path(__FILE__).parent_path() / "assets/moon2.jpg"),
       .isMatte = false};
 
   float daysPerSecond = 0; // .1;
@@ -751,6 +751,7 @@ int main() {
   int ymdhms[6] = {2023, 10, 13, 0, 0, 0};
 
   SpiceDouble currentEt = 750578468.1823622; // SPICEHelper::EphemerisTimeNow();
+
   auto previousTime = std::chrono::high_resolution_clock::now();
   while (!window.shouldClose()) {
     window.beginNewFrame();
@@ -779,8 +780,12 @@ int main() {
     // Slider that appears in the window
     ImGui::Combo(
         "Origins", &currentOrigin, originOptions, IM_ARRAYSIZE(originOptions));
-    ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
-    ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
+    ImGui::SliderFloat(
+        "Latitude", &lla.x(), 39 / 180.0 * M_PI, 40 / 180.0 * M_PI);
+    ImGui::SliderFloat(
+        "Longitude", &lla.y(), 1 / 180.0 * M_PI, 2 / 180.0 * M_PI);
+    // ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
+    // ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
     if (std::string(lookatOptions[currentLook]) ==
         std::string("EarthTopDown")) {
       ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e6f);
@@ -805,7 +810,6 @@ int main() {
     Sophus::SE3d T_J2000_earth = SPICEHelper::T_J2000_body("EARTH", currentEt);
     Sophus::SE3d T_J2000_sun = SPICEHelper::T_J2000_body("SUN", currentEt);
     Sophus::SE3d T_J2000_moon = SPICEHelper::T_J2000_body("MOON", currentEt);
-    // (void)SPICEHelper::T_J2000_body("MARS", currentEt);
 
     earth.T_self_world = T_J2000_earth.inverse();
     sun.T_self_world = T_J2000_sun.inverse();
@@ -843,7 +847,7 @@ int main() {
       T_earth_camera = LookAt(
           camera_earth,
           camera_earth + Eigen::Vector3d::UnitY(),
-          camera_earth.normalized());
+          -camera_earth.normalized());
     } else if (chosenLook == "Moon") {
       const Sophus::SE3d T_earth_moon =
           earth.T_self_world * moon.T_self_world.inverse();
@@ -894,7 +898,8 @@ int main() {
     //   const Eigen::Vector3d center =
     //   sun.T_self_world.inverse().translation(); const Eigen::Vector3d
     //   direction =
-    //       (moon.T_self_world.inverse().translation() - center).normalized();
+    //       (moon.T_self_world.inverse().translation() -
+    //       center).normalized();
     //   if (const auto distance = intersect(
     //           center,
     //           direction,

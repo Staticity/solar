@@ -2,7 +2,6 @@
 
 // Camera Parameters
 uniform mat3 K;
-uniform mat4 T_world_camera;
 
 // Light parameters
 uniform int isMatte;
@@ -125,9 +124,6 @@ SDFHit raymarch(vec3 camera_world, vec3 direction) {
 }
 
 void main() {
-    // mat4 T_shape_camera = T_shape_world * T_world_camera;
-    // vec3 light_shape = (T_shape_world * inverse(T_light_world))[3].xyz;
-
     mat3 R_shape_camera = mat3(
         T_shape_camera[0].xyz,
         T_shape_camera[1].xyz,

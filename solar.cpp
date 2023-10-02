@@ -211,20 +211,20 @@ class ReloadableTexture {
 
 class ImguiOpenGLRenderer {
  public:
-  ImguiOpenGLRenderer(int width, int height) : width(width), height(height) {
+  ImguiOpenGLRenderer() : width_(1), height_(1) {
     // Create the framebuffer
-    glGenFramebuffers(1, &framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glGenFramebuffers(1, &framebuffer_);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
 
     // Create the texture to hold color info
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
+    glGenTextures(1, &texture_);
+    glBindTexture(GL_TEXTURE_2D, texture_);
     glTexImage2D(
         GL_TEXTURE_2D,
         0,
         GL_RGB,
-        width,
-        height,
+        width_,
+        height_,
         0,
         GL_RGB,
         GL_UNSIGNED_BYTE,
@@ -232,17 +232,18 @@ class ImguiOpenGLRenderer {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_, 0);
 
     // Create the depth and stencil buffer
-    glGenRenderbuffers(1, &depthStencilBuffer);
-    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glGenRenderbuffers(1, &depthStencilBuffer_);
+    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer_);
+    glRenderbufferStorage(
+        GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width_, height_);
     glFramebufferRenderbuffer(
         GL_FRAMEBUFFER,
         GL_DEPTH_STENCIL_ATTACHMENT,
         GL_RENDERBUFFER,
-        depthStencilBuffer);
+        depthStencilBuffer_);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
       throw std::runtime_error("Framebuffer not complete");
@@ -252,14 +253,14 @@ class ImguiOpenGLRenderer {
   }
 
   ~ImguiOpenGLRenderer() {
-    glDeleteFramebuffers(1, &framebuffer);
-    glDeleteTextures(1, &texture);
-    glDeleteRenderbuffers(1, &depthStencilBuffer);
+    glDeleteFramebuffers(1, &framebuffer_);
+    glDeleteTextures(1, &texture_);
+    glDeleteRenderbuffers(1, &depthStencilBuffer_);
   }
 
   void render(
       const std::string& title, const std::function<void(ImVec2)>& renderFn) {
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
 
     const ImGuiWindowFlags windowFlags =
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
@@ -267,16 +268,17 @@ class ImguiOpenGLRenderer {
     ImGui::Begin(title.c_str(), nullptr, windowFlags);
     const ImVec2 size = ImGui::GetWindowSize();
 
-    if (static_cast<int>(size.x) != width ||
-        static_cast<int>(size.y) != height) {
+    if (static_cast<int>(size.x) != width_ ||
+        static_cast<int>(size.y) != height_) {
       resizeAttachments(static_cast<int>(size.x), static_cast<int>(size.y));
     }
 
-    glViewport(0, 0, width, height);
+    glViewport(0, 0, width_, height_);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     renderFn(size);
 
-    ImGui::Image(reinterpret_cast<void*>(static_cast<intptr_t>(texture)), size);
+    ImGui::Image(
+        reinterpret_cast<void*>(static_cast<intptr_t>(texture_)), size);
     ImGui::End();
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -285,7 +287,7 @@ class ImguiOpenGLRenderer {
  private:
   void resizeAttachments(int newWidth, int newHeight) {
     // Resize color texture
-    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindTexture(GL_TEXTURE_2D, texture_);
     glTexImage2D(
         GL_TEXTURE_2D,
         0,
@@ -299,19 +301,19 @@ class ImguiOpenGLRenderer {
     glBindTexture(GL_TEXTURE_2D, 0);
 
     // Resize depth and stencil renderbuffer
-    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer);
+    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer_);
     glRenderbufferStorage(
         GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, newWidth, newHeight);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-    width = newWidth;
-    height = newHeight;
+    width_ = newWidth;
+    height_ = newHeight;
   }
 
-  GLuint framebuffer;
-  GLuint texture;
-  GLuint depthStencilBuffer;
-  int width, height;
+  GLuint framebuffer_;
+  GLuint texture_;
+  GLuint depthStencilBuffer_;
+  int width_, height_;
 };
 
 class SPICEPose {
@@ -560,7 +562,7 @@ int main() {
   float cameraFieldOfView = 1.0f / 180.0 * M_PI;
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
-  ImguiOpenGLRenderer imguiRender(960, 540);
+  ImguiOpenGLRenderer imguiRender;
 
   bool hideEarth = false;
   // earth, up, moon, sun

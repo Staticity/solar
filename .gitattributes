@@ -1,0 +1,2 @@
+spice/kernels filter=lfs diff=lfs merge=lfs -text
+spice/kernels/de440.bsp filter=lfs diff=lfs merge=lfs -text

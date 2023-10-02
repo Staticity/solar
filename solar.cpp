@@ -38,22 +38,82 @@ std::string readFile(const char* filePath) {
   return content;
 }
 
-class FilepathModifiedTracker {
+GLuint CreateTexture(
+    unsigned char* data, int width, int height, int nrChannels) {
+  GLuint texture;
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+
+  // set the texture wrapping/filtering options (on the currently bound texture
+  // object)
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glTexParameteri(
+      GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+  if (data) {
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        (nrChannels == 1) ? GL_RED : GL_RGB,
+        width,
+        height,
+        0,
+        (nrChannels == 1) ? GL_RED : GL_RGB,
+        GL_UNSIGNED_BYTE,
+        data);
+    // Cover grayscale case
+    if (nrChannels == 1) {
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+    }
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+  } else {
+    return -1;
+  }
+
+  return texture;
+}
+
+GLuint CreateTexture(unsigned char r, unsigned char g, unsigned char b) {
+  std::vector<unsigned char> data = {r, g, b};
+  return CreateTexture(data.data(), 1, 1, 3);
+}
+
+GLuint CreateTexture(const std::string& filepath) {
+  if (!std::filesystem::exists(filepath)) {
+    fmt::println("Couldn't find texture path: {}", filepath);
+    exit(-1);
+  }
+  // load and generate the texture
+  int width, height, nrChannels;
+  unsigned char* data =
+      stbi_load(filepath.c_str(), &width, &height, &nrChannels, 0);
+
+  const auto texture = CreateTexture(data, width, height, nrChannels);
+  stbi_image_free(data);
+  return texture;
+}
+
+class FileModifiedTracker {
  public:
-  FilepathModifiedTracker(const std::filesystem::path& filepath)
+  FileModifiedTracker(const std::filesystem::path& filepath)
       : filepath_(filepath),
         lastWrite_(std::filesystem::last_write_time(filepath)) {}
 
   const std::filesystem::path path() const { return filepath_; }
 
   bool wasModified() const {
-    return lastWrite_ == std::filesystem::last_write_time(filepath_);
+    return lastWrite_ != std::filesystem::last_write_time(filepath_);
   }
 
-  void refresh() { lastWrite_ == std::filesystem::last_write_time(filepath_); }
+  void refresh() { lastWrite_ = std::filesystem::last_write_time(filepath_); }
 
  private:
-  const std::filesystem::path filepath_;
+  std::filesystem::path filepath_;
   std::filesystem::file_time_type lastWrite_;
 };
 
@@ -61,23 +121,18 @@ class ReloadableShader {
  public:
   ReloadableShader(
       const std::filesystem::path& vertexShaderFilepath,
-      const std::filesystem::path& fragmentShaderFilepath) {
+      const std::filesystem::path& fragmentShaderFilepath)
+      : vertexShader_(vertexShaderFilepath),
+        fragmentShader_(fragmentShaderFilepath) {
     loadShaders(vertexShaderFilepath, fragmentShaderFilepath);
   }
 
-  void MaybeReload() {
-    if (vertexShader_.wasModified() || fragmentShader_.wasModified()) {
-      glDeleteProgram(shaderProgram_);
-      loadShaders(vertexShader_.path(), fragmentShader_.path());
-    }
-  }
-
-  void Use() { glUseProgram(shaderProgram_); }
-
- private:
   void loadShaders(
       const std::filesystem::path& vertexShaderFilepath,
       const std::filesystem::path& fragmentShaderFilepath) {
+    vertexShader_ = FileModifiedTracker(vertexShaderFilepath);
+    fragmentShader_ = FileModifiedTracker(fragmentShaderFilepath);
+
     const std::string vertexShaderSource =
         readFile(vertexShaderFilepath.c_str());
     const std::string fragmentShaderSource =
@@ -104,15 +159,51 @@ class ReloadableShader {
     glDeleteShader(fragmentShader);
   }
 
-  FilepathModifiedTracker vertexShader_;
-  FilepathModifiedTracker fragmentShader_;
+  void Use() {
+    maybeReload();
+    glUseProgram(shaderProgram_);
+  }
+
+ private:
+  void maybeReload() {
+    if (vertexShader_.wasModified() || fragmentShader_.wasModified()) {
+      glDeleteProgram(shaderProgram_);
+      loadShaders(vertexShader_.path(), fragmentShader_.path());
+    }
+  }
+
+  FileModifiedTracker vertexShader_;
+  FileModifiedTracker fragmentShader_;
   GLuint shaderProgram_;
 };
 
-// class ReloadableTexture {
-//  public:
-//  private:
-// };
+class ReloadableTexture {
+ public:
+  ReloadableTexture(const std::filesystem::path& filepath)
+      : filepath_(filepath) {
+    load(filepath);
+  }
+
+  void load(const std::filesystem::path& path) {
+    filepath_ = FileModifiedTracker(path);
+    texture_ = CreateTexture(filepath_.path());
+  }
+
+  void maybeReload() {
+    if (filepath_.wasModified()) {
+      texture_ = CreateTexture(filepath_.path());
+    }
+  }
+
+  GLuint id() {
+    maybeReload();
+    return texture_;
+  }
+
+ private:
+  GLuint texture_;
+  FileModifiedTracker filepath_;
+};
 
 class ImguiOpenGLRenderer {
  private:
@@ -284,66 +375,6 @@ void keyCallback(
     GLFWwindow* window, int key, int scancode, int action, int mods) {
   if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
     glfwSetWindowShouldClose(window, GLFW_TRUE);
-}
-
-GLuint CreateTexture(
-    unsigned char* data, int width, int height, int nrChannels) {
-  GLuint texture;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_2D, texture);
-
-  // set the texture wrapping/filtering options (on the currently bound texture
-  // object)
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameteri(
-      GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-  if (data) {
-    glTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        (nrChannels == 1) ? GL_RED : GL_RGB,
-        width,
-        height,
-        0,
-        (nrChannels == 1) ? GL_RED : GL_RGB,
-        GL_UNSIGNED_BYTE,
-        data);
-    // Cover grayscale case
-    if (nrChannels == 1) {
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
-    }
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-  } else {
-    return -1;
-  }
-
-  return texture;
-}
-
-GLuint CreateTexture(unsigned char r, unsigned char g, unsigned char b) {
-  std::vector<unsigned char> data = {r, g, b};
-  return CreateTexture(data.data(), 1, 1, 3);
-}
-
-GLuint CreateTexture(const std::string& filepath) {
-  if (!std::filesystem::exists(filepath)) {
-    fmt::println("Couldn't find texture path: {}", filepath);
-    exit(-1);
-  }
-  // load and generate the texture
-  int width, height, nrChannels;
-  unsigned char* data =
-      stbi_load(filepath.c_str(), &width, &height, &nrChannels, 0);
-
-  const auto texture = CreateTexture(data, width, height, nrChannels);
-  stbi_image_free(data);
-  return texture;
 }
 
 GLuint CreateShaderProgram(

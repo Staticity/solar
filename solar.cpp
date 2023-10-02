@@ -212,7 +212,8 @@ class ReloadableTexture {
 
 class ImguiOpenGLRenderer {
  public:
-  ImguiOpenGLRenderer() : width_(1), height_(1) {
+  ImguiOpenGLRenderer(const std::string& title)
+      : title_(title), width_(1.0f), height_(1.0f) {
     // Create the framebuffer
     glGenFramebuffers(1, &framebuffer_);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
@@ -221,15 +222,7 @@ class ImguiOpenGLRenderer {
     glGenTextures(1, &texture_);
     glBindTexture(GL_TEXTURE_2D, texture_);
     glTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        GL_RGB,
-        width_,
-        height_,
-        0,
-        GL_RGB,
-        GL_UNSIGNED_BYTE,
-        NULL);
+        GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(
@@ -238,8 +231,7 @@ class ImguiOpenGLRenderer {
     // Create the depth and stencil buffer
     glGenRenderbuffers(1, &depthStencilBuffer_);
     glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer_);
-    glRenderbufferStorage(
-        GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width_, height_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 1, 1);
     glFramebufferRenderbuffer(
         GL_FRAMEBUFFER,
         GL_DEPTH_STENCIL_ATTACHMENT,
@@ -259,14 +251,15 @@ class ImguiOpenGLRenderer {
     glDeleteRenderbuffers(1, &depthStencilBuffer_);
   }
 
-  void render(
-      const std::string& title, const std::function<void(ImVec2)>& renderFn) {
+  ImVec2 size() { return {width_, height_}; }
+
+  void bind() {
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
 
     const ImGuiWindowFlags windowFlags =
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
-    ImGui::Begin(title.c_str(), nullptr, windowFlags);
+    ImGui::Begin(title_.c_str(), nullptr, windowFlags);
     const ImVec2 size = ImGui::GetWindowSize();
 
     if (static_cast<int>(size.x) != width_ ||
@@ -276,10 +269,12 @@ class ImguiOpenGLRenderer {
 
     glViewport(0, 0, width_, height_);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    renderFn(size);
+  }
 
+  void unbind() {
     ImGui::Image(
-        reinterpret_cast<void*>(static_cast<intptr_t>(texture_)), size);
+        reinterpret_cast<void*>(static_cast<intptr_t>(texture_)),
+        {width_, height_});
     ImGui::End();
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -311,10 +306,12 @@ class ImguiOpenGLRenderer {
     height_ = newHeight;
   }
 
+  const std::string title_;
   GLuint framebuffer_;
   GLuint texture_;
   GLuint depthStencilBuffer_;
-  int width_, height_;
+  float width_;
+  float height_;
 };
 
 class SPICEHelper {
@@ -425,6 +422,52 @@ class SPICEHelper {
   SPICEHelper& operator=(SPICEHelper&&) = delete; // Move assignment
 };
 
+class PerPixelVAO {
+ public:
+  PerPixelVAO() {
+    float vertices[] = {
+        -1.0f,
+        1.0f,
+        -1.0f,
+        -1.0f,
+        1.0f,
+        -1.0f,
+
+        1.0f,
+        -1.0f,
+        1.0f,
+        1.0f,
+        -1.0f,
+        1.0f};
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glVertexAttribPointer(
+        0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+  }
+
+  ~PerPixelVAO() {
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteBuffers(1, &VBO);
+  }
+
+  GLuint id() const { return VAO; }
+
+ private:
+  GLuint VAO;
+  GLuint VBO;
+};
+
 Sophus::SE3d LookAt(
     const Eigen::Vector3d& position_world,
     const Eigen::Vector3d& target_world,
@@ -448,6 +491,88 @@ void keyCallback(
   if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
     glfwSetWindowShouldClose(window, GLFW_TRUE);
 }
+
+class OpenGLWindow {
+ public:
+  OpenGLWindow(
+      const std::string& windowName,
+      int width,
+      int height,
+      bool stayOnTop = false) {
+    if (!glfwInit()) {
+      throw std::runtime_error("Failed to initilize GLFW.");
+    }
+
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    window_ = glfwCreateWindow(width, height, windowName.c_str(), NULL, NULL);
+    if (!window_) {
+      glfwTerminate();
+      throw std::runtime_error("Failed to create GLFW window.");
+    }
+    if (stayOnTop) {
+      glfwSetWindowAttrib(window_, GLFW_FLOATING, GLFW_TRUE);
+    }
+
+    glfwMakeContextCurrent(window_);
+    glfwSetKeyCallback(window_, keyCallback);
+
+    if (glewInit() != GLEW_OK) {
+      throw std::runtime_error("Failed to initialize GLEW.");
+    }
+
+    // Initialize ImGUI
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |=
+        ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
+    io.ConfigFlags |=
+        ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // IF using Docking Branch
+    // ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window_, true);
+    ImGui_ImplOpenGL3_Init("#version 410");
+  }
+
+  ~OpenGLWindow() {
+    // Deletes all ImGUI instances
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+
+    glfwTerminate();
+  }
+
+  bool shouldClose() const { return glfwWindowShouldClose(window_); }
+  void setErrorCallback(GLFWerrorfun fn) const { glfwSetErrorCallback(fn); }
+  void setKeyCallback(GLFWkeyfun fn) const { glfwSetKeyCallback(window_, fn); }
+
+  void beginNewFrame() {
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    ImGuiID dockspace_id =
+        ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+  }
+
+  void finishFrame() {
+    // Renders the ImGUI elements
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    glfwSwapBuffers(window_);
+    glfwPollEvents();
+  }
+
+ private:
+  GLFWwindow* window_;
+};
 
 struct Camera {
   Sophus::SE3d T_world_self;
@@ -520,79 +645,8 @@ void SetObjectUniforms(
 }
 
 int main() {
-  glfwSetErrorCallback(error_callback);
-
-  if (!glfwInit()) {
-    std::cerr << "Failed to initialize GLFW" << std::endl;
-    return -1;
-  }
-
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-  glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-  GLFWwindow* window = glfwCreateWindow(
-      640, 640 * 20 / 9, "Solar System - Raymarching SDF", NULL, NULL);
-  if (!window) {
-    std::cerr << "Failed to create GLFW window" << std::endl;
-    glfwTerminate();
-    return -1;
-  }
-  glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_TRUE);
-
-  glfwMakeContextCurrent(window);
-  glfwSetKeyCallback(window, keyCallback);
-
-  if (glewInit() != GLEW_OK) {
-    std::cerr << "Failed to initialize GLEW" << std::endl;
-    return -1;
-  }
-
-  float vertices[] = {
-      -1.0f,
-      1.0f,
-      -1.0f,
-      -1.0f,
-      1.0f,
-      -1.0f,
-
-      1.0f,
-      -1.0f,
-      1.0f,
-      1.0f,
-      -1.0f,
-      1.0f};
-
-  GLuint VAO, VBO;
-  glGenVertexArrays(1, &VAO);
-  glGenBuffers(1, &VBO);
-
-  glBindVertexArray(VAO);
-  glBindBuffer(GL_ARRAY_BUFFER, VBO);
-
-  glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
-  glEnableVertexAttribArray(0);
-
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-  glBindVertexArray(0);
-
-  // Initialize ImGUI
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.ConfigFlags |=
-      ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
-  io.ConfigFlags |=
-      ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // IF using Docking Branch
-  // ImGui::StyleColorsDark();
-  ImGui_ImplGlfw_InitForOpenGL(window, true);
-  ImGui_ImplOpenGL3_Init("#version 410");
+  OpenGLWindow window("Solar System", 1980, 1080, true);
+  PerPixelVAO vao;
 
   ReloadableShader shader(
       "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
@@ -627,7 +681,7 @@ int main() {
   float cameraFieldOfView = 1.0f / 180.0 * M_PI;
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
-  ImguiOpenGLRenderer imguiRender;
+  ImguiOpenGLRenderer gameTab("Game");
 
   bool hideEarth = false;
   // earth, up, moon, sun
@@ -636,12 +690,8 @@ int main() {
 
   SpiceDouble currentEt = SPICEHelper::EphemerisTimeNow();
   auto previousTime = std::chrono::high_resolution_clock::now();
-  while (!glfwWindowShouldClose(window)) {
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-    ImGuiID dockspace_id =
-        ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+  while (!window.shouldClose()) {
+    window.beginNewFrame();
 
     const char* lookatOptions[] = {
         "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
@@ -651,7 +701,6 @@ int main() {
     static int currentOrigin = 0;
 
     // ImGUI window creation
-
     ImGui::Begin("Controls");
     ImGui::Text("Time:");
     ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 31);
@@ -675,11 +724,7 @@ int main() {
     ImGui::Combo(
         "Look At", &currentLook, lookatOptions, IM_ARRAYSIZE(lookatOptions));
     ImGui::Checkbox("Hide Earth", &hideEarth);
-
-    // Ends the window
     ImGui::End();
-    // ImGui::Begin("DockSpace Demo"); // Create a new window
-    // ImGui::End();
 
     // Calculate current time
     const auto currentTime = std::chrono::high_resolution_clock::now();
@@ -756,55 +801,34 @@ int main() {
           Eigen::Vector3d::UnitY());
     }
 
-    imguiRender.render("Game", [&](const ImVec2& size) {
-      const auto [width, height] = size;
+    gameTab.bind();
+    const ImVec2 size = gameTab.size();
+    const auto [width, height] = size;
 
-      const auto fy = (height / 2.0) / tan(cameraFieldOfView / 2.0);
-      Eigen::Matrix3f K;
-      K << fy, 0, width / 2.0, 0, fy, height / 2.0, 0, 0, 1;
+    const auto fy = (height / 2.0) / tan(cameraFieldOfView / 2.0);
+    Eigen::Matrix3f K;
+    K << fy, 0, width / 2.0, 0, fy, height / 2.0, 0, 0, 1;
 
-      Camera camera{
-          .T_world_self = earth.T_self_world.inverse() * T_earth_camera,
-          .K = K};
+    Camera camera{
+        .T_world_self = earth.T_self_world.inverse() * T_earth_camera, .K = K};
 
-      Light lighting{.T_self_world = sun.T_self_world};
+    Light lighting{.T_self_world = sun.T_self_world};
 
-      const auto shaderProgram = shader.id();
-      glUseProgram(shaderProgram);
-      SetObjectUniforms(shaderProgram, camera, lighting, sun);
-      glBindVertexArray(VAO);
+    const auto shaderProgram = shader.id();
+    glUseProgram(shaderProgram);
+    glBindVertexArray(vao.id());
+    SetObjectUniforms(shaderProgram, camera, lighting, sun);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    SetObjectUniforms(shaderProgram, camera, lighting, moon);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    if (!hideEarth) {
+      SetObjectUniforms(shaderProgram, camera, lighting, earth);
       glDrawArrays(GL_TRIANGLES, 0, 6);
-      glBindVertexArray(0);
+    }
+    gameTab.unbind();
 
-      SetObjectUniforms(shaderProgram, camera, lighting, moon);
-      glBindVertexArray(VAO);
-      glDrawArrays(GL_TRIANGLES, 0, 6);
-      glBindVertexArray(0);
-
-      if (!hideEarth) {
-        SetObjectUniforms(shaderProgram, camera, lighting, earth);
-        glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindVertexArray(0);
-      }
-    });
-
-    // Renders the ImGUI elements
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    glfwSwapBuffers(window);
-    glfwPollEvents();
+    window.finishFrame();
   }
 
-  // Deletes all ImGUI instances
-  ImGui_ImplOpenGL3_Shutdown();
-  ImGui_ImplGlfw_Shutdown();
-  ImGui::DestroyContext();
-
-  glDeleteVertexArrays(1, &VAO);
-  glDeleteBuffers(1, &VBO);
-
-  glfwTerminate();
   return 0;
 }

@@ -150,7 +150,9 @@ void main() {
 
         // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
 
-        FragColor = textureColor * max(.1, intensity);
+        FragColor = textureColor * max(0, intensity);
+
+
         // FragColor = vec4(light_direction, 1);
         gl_FragDepth = length(t_shape_camera - result.position) / MaximumDistance;
         // if (result.steps > 10)

@@ -5,7 +5,6 @@
 #include <sstream>
 #include <vector>
 #include <GL/glew.h>
-#include <GLFW/glfw3.h>
 #include <Sophus/se3.hpp>
 #include <fmt/format.h>
 #include "SpiceUsr.h"
@@ -19,10 +18,118 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-class SolarSystemPose {
+#include <GLFW/glfw3.h>
+
+class ImguiOpenGLRenderer {
+ private:
+  GLuint framebuffer;
+  GLuint texture;
+  GLuint depthStencilBuffer;
+  int width, height;
+
  public:
-  SolarSystemPose() { init(); }
-  ~SolarSystemPose() { cleanup(); }
+  ImguiOpenGLRenderer(int width, int height) : width(width), height(height) {
+    // Create the framebuffer
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+    // Create the texture to hold color info
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGB,
+        width,
+        height,
+        0,
+        GL_RGB,
+        GL_UNSIGNED_BYTE,
+        NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
+    // Create the depth and stencil buffer
+    glGenRenderbuffers(1, &depthStencilBuffer);
+    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER,
+        GL_DEPTH_STENCIL_ATTACHMENT,
+        GL_RENDERBUFFER,
+        depthStencilBuffer);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      // Handle error
+      throw std::runtime_error("Framebuffer not complete");
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+
+  ~ImguiOpenGLRenderer() {
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &texture);
+    glDeleteRenderbuffers(1, &depthStencilBuffer);
+  }
+
+  void resizeAttachments(int newWidth, int newHeight) {
+    // Resize color texture
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGB,
+        newWidth,
+        newHeight,
+        0,
+        GL_RGB,
+        GL_UNSIGNED_BYTE,
+        NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // Resize depth and stencil renderbuffer
+    glBindRenderbuffer(GL_RENDERBUFFER, depthStencilBuffer);
+    glRenderbufferStorage(
+        GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, newWidth, newHeight);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    width = newWidth;
+    height = newHeight;
+  }
+
+  void render(
+      const std::string& title, const std::function<void(ImVec2)>& renderFn) {
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+    const ImGuiWindowFlags windowFlags =
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+
+    ImGui::Begin(title.c_str(), nullptr, windowFlags);
+    const ImVec2 size = ImGui::GetWindowSize();
+
+    if (static_cast<int>(size.x) != width ||
+        static_cast<int>(size.y) != height) {
+      resizeAttachments(static_cast<int>(size.x), static_cast<int>(size.y));
+    }
+
+    glViewport(0, 0, width, height);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderFn(size);
+
+    ImGui::Image(reinterpret_cast<void*>(static_cast<intptr_t>(texture)), size);
+    ImGui::End();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+};
+
+class SPICEPose {
+ public:
+  SPICEPose() { init(); }
+  ~SPICEPose() { cleanup(); }
 
   Sophus::SE3d T_J2000_body(const std::string& body, double ephemerisTime) {
     SpiceDouble bodyState[6], lt;
@@ -37,15 +144,8 @@ class SolarSystemPose {
 
     Eigen::Quaterniond J2000_body_xzy(
         q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]);
-    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
-    // clang-format off
-    // R << 1, 0, 0,
-    //      0, 0, -1,
-    //      0, 1, 0;
-    // clang-format on
-
     return Sophus::SE3d(
-        J2000_body_xzy.matrix() * R,
+        J2000_body_xzy.matrix(),
         Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
   }
 
@@ -90,31 +190,6 @@ void keyCallback(
     GLFWwindow* window, int key, int scancode, int action, int mods) {
   if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
     glfwSetWindowShouldClose(window, GLFW_TRUE);
-}
-
-Eigen::Vector3f MoonEclipticRectangularCoordinatesJ2000(double JD) noexcept {
-  double Longitude{CAAMoon::EclipticLongitude(JD)};
-  Longitude = CAACoordinateTransformation::DegreesToRadians(Longitude);
-  double Latitude{CAAMoon::EclipticLatitude(JD)};
-  Latitude = CAACoordinateTransformation::DegreesToRadians(Latitude);
-  const double coslatitude{cos(Latitude)};
-  const double R{CAAMoon::RadiusVector(JD)};
-
-  Eigen::Vector3f value;
-  value.x() = R * coslatitude * cos(Longitude);
-  value.y() = R * coslatitude * sin(Longitude);
-  value.z() = R * sin(Latitude);
-  return value;
-}
-
-Eigen::Vector3f SphericalToCartesian(
-    double longitude, double latitude, double radius) {
-  Eigen::Vector3d result;
-  double cosLat = cos(latitude);
-  result.x() = radius * cosLat * cos(longitude);
-  result.y() = radius * cosLat * sin(longitude);
-  result.z() = radius * sin(latitude);
-  return result.cast<float>();
 }
 
 std::string readFile(const char* filePath) {
@@ -167,6 +242,7 @@ GLuint CreateTexture(
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
     }
     glGenerateMipmap(GL_TEXTURE_2D);
+
   } else {
     return -1;
   }
@@ -305,8 +381,8 @@ int main() {
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-  GLFWwindow* window =
-      glfwCreateWindow(1280, 600, "Raymarching SDF", NULL, NULL);
+  GLFWwindow* window = glfwCreateWindow(
+      640, 640 * 20 / 9, "Solar System - Raymarching SDF", NULL, NULL);
   if (!window) {
     std::cerr << "Failed to create GLFW window" << std::endl;
     glfwTerminate();
@@ -404,15 +480,24 @@ int main() {
           CreateTexture("/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
       .isMatte = false};
 
-  float daysPerSecond = 0; // .1;
+  float daysPerSecond = 2.5; // .1;
   float cameraFieldOfView = 1.0f / 180.0 * M_PI;
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
+  ImguiOpenGLRenderer imguiRender(960, 540);
+
+  bool hideEarth = false;
   // earth, up, moon, sun
   bool lookat[4] = {false, false, false, false};
   auto start = std::chrono::high_resolution_clock::now();
   glEnable(GL_DEPTH_TEST);
-  SolarSystemPose solar;
+  SPICEPose solar;
+
+  // Convert the UTC time to ephemeris time (TDB)
+  // ConstSpiceChar* utc2 = "2021-03-30T12:00:00";
+  // SpiceDouble et2;
+  // str2et_c(utc2, &et2);
+  // solar.T_J2000_body("MARS", 0);
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -436,7 +521,7 @@ int main() {
     ImGui::NewFrame();
     const char* lookatOptions[] = {
         "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
-    static int currentLook = 0;
+    static int currentLook = 2;
 
     const char* originOptions[] = {"J2000", "Earth", "Moon", "Sun"};
     static int currentOrigin = 0;
@@ -444,7 +529,7 @@ int main() {
     // ImGUI window creation
     ImGui::Begin("Controls");
     ImGui::Text("Time:");
-    ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 1);
+    ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 31);
     // Text that appears in the window
     ImGui::Text("Camera Position:");
     // Slider that appears in the window
@@ -458,15 +543,13 @@ int main() {
     } else if (std::string(lookatOptions[currentLook]) == "SunTopDown") {
       ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 200e6f);
     } else {
-      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e4f);
+      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 5e4f);
     }
     ImGui::Text("Camera Settings:");
-    ImGui::SliderAngle("Vertical Field of View", &cameraFieldOfView, 0, 120.0f);
+    ImGui::SliderAngle("Vertical FoV", &cameraFieldOfView, 0, 120.0f);
     ImGui::Combo(
-        "Look Directions",
-        &currentLook,
-        lookatOptions,
-        IM_ARRAYSIZE(lookatOptions));
+        "Look At", &currentLook, lookatOptions, IM_ARRAYSIZE(lookatOptions));
+    ImGui::Checkbox("Hide Earth", &hideEarth);
 
     // Ends the window
     ImGui::End();
@@ -507,18 +590,6 @@ int main() {
     earth.T_self_world *= T_world_newWorld;
     sun.T_self_world *= T_world_newWorld;
     moon.T_self_world *= T_world_newWorld;
-
-    // clang-format off
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
-
-    const auto fy = (height / 2.0) / tan(cameraFieldOfView / 2.0);
-    Eigen::Matrix3f K;
-    K << 
-           fy,       0,  width / 2.0,
-            0,      fy, height / 2.0,
-            0,       0,            1;
-    // clang-format on
 
     Sophus::SE3d T_earth_camera;
 
@@ -568,44 +639,37 @@ int main() {
           Eigen::Vector3d::UnitY());
     }
 
-    // fmt::println(
-    //     "camera: {} {} {}, earth: {} {} {}, radius: {}",
-    //     camera_earth.x(),
-    //     camera_earth.y(),
-    //     camera_earth.z(),
-    //     earth.T_self_world.translation().x(),
-    //     earth.T_self_world.translation().y(),
-    //     earth.T_self_world.translation().z(),
-    //     earth.parameters.at(0));
+    imguiRender.render("Game", [&](const ImVec2& size) {
+      const auto [width, height] = size;
 
-    // std::cout << "T_earth_caemra\n" << T_earth_camera.log() << std::endl;
+      const auto fy = (height / 2.0) / tan(cameraFieldOfView / 2.0);
+      Eigen::Matrix3f K;
+      K << fy, 0, width / 2.0, 0, fy, height / 2.0, 0, 0, 1;
 
-    Camera camera{
-        .T_world_self = earth.T_self_world.inverse() * T_earth_camera, .K = K};
+      Camera camera{
+          .T_world_self = earth.T_self_world.inverse() * T_earth_camera,
+          .K = K};
 
-    Light lighting{.T_self_world = sun.T_self_world};
+      Light lighting{.T_self_world = sun.T_self_world};
 
-    // std::cout << "camera:\n" << camera.T_world_self.log() << std::endl;
-    // std::cout << "lighting:\n" << lighting.T_self_world.log() << std::endl;
-    // std::cout << (lighting.T_self_world * camera.T_world_self).log()
-    //           << std::endl
-    //           << std::endl;
+      glUseProgram(shaderProgram);
+      SetObjectUniforms(shaderProgram, camera, lighting, sun);
+      glBindVertexArray(VAO);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glBindVertexArray(0);
 
-    glUseProgram(shaderProgram);
-    SetObjectUniforms(shaderProgram, camera, lighting, sun);
-    glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
+      SetObjectUniforms(shaderProgram, camera, lighting, moon);
+      glBindVertexArray(VAO);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      glBindVertexArray(0);
 
-    SetObjectUniforms(shaderProgram, camera, lighting, moon);
-    glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-
-    SetObjectUniforms(shaderProgram, camera, lighting, earth);
-    glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
+      if (!hideEarth) {
+        SetObjectUniforms(shaderProgram, camera, lighting, earth);
+        glBindVertexArray(VAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+      }
+    });
 
     // Renders the ImGUI elements
     ImGui::Render();

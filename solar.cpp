@@ -20,6 +20,26 @@
 
 #include <GLFW/glfw3.h>
 
+std::optional<double> intersect(
+    const Eigen::Vector3d p,
+    const Eigen::Vector3d& d,
+    const Eigen::Vector3d& sphere,
+    const double radius) {
+  Eigen::Vector3d oc = p - sphere;
+  double a = d.dot(d);
+  double b = 2.0f * oc.dot(d);
+  double c = oc.dot(oc) - radius * radius;
+
+  double discriminant = b * b - 4 * a * c;
+
+  if (discriminant < 0) {
+    return {}; // No intersection.
+  } else {
+    // Return the nearest intersection point.
+    return (-b - std::sqrt(discriminant)) / (2.0f * a);
+  }
+}
+
 std::string readFile(const char* filePath) {
   std::string content;
   std::ifstream fileStream(filePath, std::ios::in);
@@ -182,6 +202,10 @@ class ReloadableShader {
 
 class ReloadableTexture {
  public:
+  ReloadableTexture(unsigned char r, unsigned char g, unsigned char b) {
+    texture_ = CreateTexture(r, g, b);
+  }
+
   ReloadableTexture(const std::filesystem::path& filepath)
       : filepath_(filepath) {
     load(filepath);
@@ -189,14 +213,32 @@ class ReloadableTexture {
 
   ~ReloadableTexture() { glDeleteTextures(1, &texture_); }
 
+  ReloadableTexture(const ReloadableTexture&) = delete;
+  ReloadableTexture& operator=(const ReloadableTexture&) = delete;
+
+  ReloadableTexture(ReloadableTexture&& other) noexcept
+      : texture_(other.texture_), filepath_(std::move(other.filepath_)) {
+    other.texture_ = 0; // Transfer ownership
+  }
+
+  ReloadableTexture& operator=(ReloadableTexture&& other) noexcept {
+    if (this != &other) {
+      glDeleteTextures(1, &texture_); // Clean up existing texture
+      texture_ = other.texture_;
+      filepath_ = std::move(other.filepath_);
+      other.texture_ = 0; // Transfer ownership
+    }
+    return *this;
+  }
+
   void load(const std::filesystem::path& path) {
     filepath_ = FileModifiedTracker(path);
-    texture_ = CreateTexture(filepath_.path());
+    texture_ = CreateTexture(filepath_->path());
   }
 
   void maybeReload() const {
-    if (filepath_.wasModified()) {
-      texture_ = CreateTexture(filepath_.path());
+    if (filepath_ && filepath_->wasModified()) {
+      texture_ = CreateTexture(filepath_->path());
     }
   }
 
@@ -207,7 +249,7 @@ class ReloadableTexture {
 
  private:
   mutable GLuint texture_;
-  FileModifiedTracker filepath_;
+  std::optional<FileModifiedTracker> filepath_;
 };
 
 class ImguiOpenGLRenderer {
@@ -266,10 +308,10 @@ class ImguiOpenGLRenderer {
         static_cast<int>(size.y) != height_) {
       resizeAttachments(static_cast<int>(size.x), static_cast<int>(size.y));
     }
-
     glViewport(0, 0, width_, height_);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   }
+
+  void clear() { glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); }
 
   void unbind() {
     ImGui::Image(
@@ -343,6 +385,20 @@ class SPICEHelper {
     return et;
   }
 
+  // struct Date {
+  //   int year;
+  //   int month;
+  //   int day;
+  //   int hour;
+  //   int minute;
+  //   int second;
+  // };
+  static std::string EphemerisTimeToDate(SpiceDouble et) {
+    char utc_time[40];
+    et2utc_c(et, "%Y-%m-%dT%H:%M:%S", 0, 40, utc_time);
+    return std::string(utc_time);
+  }
+
   static SpiceDouble EphemerisTimeFromDate(
       int year,
       int month,
@@ -381,10 +437,13 @@ class SPICEHelper {
   // static wrapper
   Sophus::SE3d T_J2000_body_impl(
       const std::string& body, double ephemerisTime) {
+    fmt::println("SPICE Position");
+
     SpiceDouble bodyState[6], lt;
     spkezr_c(
         body.c_str(), ephemerisTime, "J2000", "NONE", "EARTH", bodyState, &lt);
 
+    fmt::println("SPICE Orientation");
     const std::string& fixedFrame = "IAU_" + body;
     SpiceDouble R_J2000_body[3][3];
     pxform_c(fixedFrame.c_str(), "J2000", ephemerisTime, R_J2000_body);
@@ -400,7 +459,7 @@ class SPICEHelper {
 
   const std::vector<std::string> kernelPaths_ = {
       "/Users/static/Downloads/cspice/data/naif0012.tls",
-      "/Users/static/Downloads/cspice/data/de430.bsp",
+      "/Users/static/Downloads/cspice/data/de440.bsp",
       "/Users/static/Downloads/cspice/data/pck00011.tpc"};
 
   void init() {
@@ -677,9 +736,10 @@ int main() {
           "/Users/static/Documents/code/sdfs/assets/moon2.jpg"),
       .isMatte = false};
 
-  float daysPerSecond = 2.5; // .1;
+  float daysPerSecond = 0; // .1;
   float cameraFieldOfView = 1.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
+  Eigen::Vector3f lla{39.2 / 180 * M_PI, -1.18 / 180 * M_PI, 3};
+  // Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
   ImguiOpenGLRenderer gameTab("Game");
 
@@ -688,7 +748,9 @@ int main() {
   bool lookat[4] = {false, false, false, false};
   glEnable(GL_DEPTH_TEST);
 
-  SpiceDouble currentEt = SPICEHelper::EphemerisTimeNow();
+  int ymdhms[6] = {2023, 10, 13, 0, 0, 0};
+
+  SpiceDouble currentEt = 750578468.1823622; // SPICEHelper::EphemerisTimeNow();
   auto previousTime = std::chrono::high_resolution_clock::now();
   while (!window.shouldClose()) {
     window.beginNewFrame();
@@ -704,6 +766,14 @@ int main() {
     ImGui::Begin("Controls");
     ImGui::Text("Time:");
     ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 31);
+    ImGui::Text("Date (UTC):");
+    ImGui::InputInt3("Year/Month/Day", ymdhms);
+    ImGui::InputInt3("Hour/Minute/Second", ymdhms + 3);
+    if (ImGui::Button("Set Date")) {
+      currentEt = SPICEHelper::EphemerisTimeFromDate(
+          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]);
+    }
+
     // Text that appears in the window
     ImGui::Text("Camera Position:");
     // Slider that appears in the window
@@ -735,6 +805,7 @@ int main() {
     Sophus::SE3d T_J2000_earth = SPICEHelper::T_J2000_body("EARTH", currentEt);
     Sophus::SE3d T_J2000_sun = SPICEHelper::T_J2000_body("SUN", currentEt);
     Sophus::SE3d T_J2000_moon = SPICEHelper::T_J2000_body("MOON", currentEt);
+    // (void)SPICEHelper::T_J2000_body("MARS", currentEt);
 
     earth.T_self_world = T_J2000_earth.inverse();
     sun.T_self_world = T_J2000_sun.inverse();
@@ -764,6 +835,7 @@ int main() {
         (R + alt) * std::cos(lat) * std::cos(lon),
         (R + alt) * std::cos(lat) * std::sin(lon),
         (R + alt) * std::sin(lat)};
+
     if (chosenLook == "Earth") {
       T_earth_camera = LookAt(
           camera_earth, Eigen::Vector3d::Zero(), Eigen::Vector3d::UnitZ());
@@ -801,7 +873,54 @@ int main() {
           Eigen::Vector3d::UnitY());
     }
 
+    // Calculate viewing angle between sun and moon from camera
+    // {
+    //   Eigen::Vector3d ab = (T_earth_camera.inverse() * earth.T_self_world *
+    //                         sun.T_self_world.inverse())
+    //                            .translation();
+    //   Eigen::Vector3d ac = (T_earth_camera.inverse() * earth.T_self_world *
+    //                         moon.T_self_world.inverse())
+    //                            .translation();
+    //   // std::string d = SPICEHelper::EphemerisTimeToDate(currentEt);
+    //   const double angle =
+    //       180 / M_PI * std::acos((ab.dot(ac)) / (ab.norm() * ac.norm()));
+    //   if (angle < 2)
+    //     fmt::println("{}: {:.2f}", currentEt, angle);
+    // }
+
+    // Show line intersection of Sun-Moon line onto earth
+    // std::optional<SDFObject> object;
+    // {
+    //   const Eigen::Vector3d center =
+    //   sun.T_self_world.inverse().translation(); const Eigen::Vector3d
+    //   direction =
+    //       (moon.T_self_world.inverse().translation() - center).normalized();
+    //   if (const auto distance = intersect(
+    //           center,
+    //           direction,
+    //           earth.T_self_world.inverse().translation(),
+    //           earth.parameters.front())) {
+    //     static int xx = 0;
+    //     fmt::println("{}", xx++);
+    //     fmt::println("Found an eclipse!");
+    //     const Eigen::Vector3d hit = center + direction * distance.value();
+    //     object = SDFObject{
+    //         .isMatte = true,
+    //         .parameters = {earth.parameters.front() / 10},
+    //         .texture = ReloadableTexture(255, 0, 0),
+    //         .type = 1,
+    //         .T_self_world = Sophus::SE3d(Sophus::SO3d(), hit).inverse()};
+    //     fmt::println(
+    //         "radius: {}, earth distance: {}",
+    //         object->parameters.front(),
+    //         (earth.T_self_world * object->T_self_world.inverse())
+    //             .translation()
+    //             .norm());
+    //   }
+    // }
+
     gameTab.bind();
+    gameTab.clear();
     const ImVec2 size = gameTab.size();
     const auto [width, height] = size;
 
@@ -825,6 +944,11 @@ int main() {
       SetObjectUniforms(shaderProgram, camera, lighting, earth);
       glDrawArrays(GL_TRIANGLES, 0, 6);
     }
+    // if (object) {
+    //   fmt::println("Rendering object..");
+    //   SetObjectUniforms(shaderProgram, camera, lighting, *object);
+    //   glDrawArrays(GL_TRIANGLES, 0, 6);
+    // }
     gameTab.unbind();
 
     window.finishFrame();

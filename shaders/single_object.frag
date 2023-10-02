@@ -21,7 +21,7 @@ out vec4 FragColor;
 
 // Constants
 const float PI = 3.1415926535897932384626433832795;
-const int MaximumSteps = 128;
+const int MaximumSteps = 1024;
 const float MaximumDistance = 1e6;
 const float MinimumDistanceRatio = 1e-6;
 
@@ -140,7 +140,7 @@ void main() {
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);
         vec3 light_direction = normalize(light_shape);
-        float intensity = max(0, dot(light_direction, result.normal));
+        float intensity = max(1, dot(light_direction, result.normal));
 
 
         // If it's Matte, then no lighting affects it. It's always bright

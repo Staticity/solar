@@ -127,6 +127,8 @@ class ReloadableShader {
     loadShaders(vertexShaderFilepath, fragmentShaderFilepath);
   }
 
+  ~ReloadableShader() { glDeleteProgram(shaderProgram_); }
+
   void loadShaders(
       const std::filesystem::path& vertexShaderFilepath,
       const std::filesystem::path& fragmentShaderFilepath) {
@@ -159,9 +161,9 @@ class ReloadableShader {
     glDeleteShader(fragmentShader);
   }
 
-  void Use() {
+  GLuint id() {
     maybeReload();
-    glUseProgram(shaderProgram_);
+    return shaderProgram_;
   }
 
  private:
@@ -183,6 +185,8 @@ class ReloadableTexture {
       : filepath_(filepath) {
     load(filepath);
   }
+
+  ~ReloadableTexture() { glDeleteTextures(1, &texture_); }
 
   void load(const std::filesystem::path& path) {
     filepath_ = FileModifiedTracker(path);
@@ -377,32 +381,6 @@ void keyCallback(
     glfwSetWindowShouldClose(window, GLFW_TRUE);
 }
 
-GLuint CreateShaderProgram(
-    const std::string& vertexShaderSource,
-    const std::string& fragmentShaderSource) {
-  const char* pVertexShaderSource = vertexShaderSource.c_str();
-  const char* pFragmentShaderSource = fragmentShaderSource.c_str();
-
-  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vertexShader, 1, &pVertexShaderSource, NULL);
-  glCompileShader(vertexShader);
-
-  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fragmentShader, 1, &pFragmentShaderSource, NULL);
-  glCompileShader(fragmentShader);
-
-  GLuint shaderProgram = glCreateProgram();
-
-  glAttachShader(shaderProgram, vertexShader);
-  glAttachShader(shaderProgram, fragmentShader);
-  glLinkProgram(shaderProgram);
-
-  glDeleteShader(vertexShader);
-  glDeleteShader(fragmentShader);
-
-  return shaderProgram;
-}
-
 struct Camera {
   Sophus::SE3d T_world_self;
   Eigen::Matrix3f K;
@@ -555,9 +533,9 @@ int main() {
       "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
       "/Users/static/Documents/code/sdfs/shaders/single_object.frag"};
   std::map<std::string, std::filesystem::file_time_type> lastModifiedTime;
-  auto shaderProgram = CreateShaderProgram(
-      readFile("/Users/static/Documents/code/sdfs/shaders/sdf.vert"),
-      readFile("/Users/static/Documents/code/sdfs/shaders/single_object.frag"));
+  ReloadableShader shader(
+      "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
+      "/Users/static/Documents/code/sdfs/shaders/single_object.frag");
   for (const auto& shaderPath : shaderFilepaths) {
     lastModifiedTime[shaderPath] = std::filesystem::last_write_time(shaderPath);
   }
@@ -608,21 +586,6 @@ int main() {
   // solar.T_J2000_body("MARS", 0);
   while (!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    bool updateShaderProgram = false;
-    for (const auto& path : shaderFilepaths) {
-      const auto writeTime = std::filesystem::last_write_time(path);
-      if (writeTime != lastModifiedTime.at(path)) {
-        lastModifiedTime[path] = writeTime;
-        updateShaderProgram = true;
-      }
-    }
-    if (updateShaderProgram) {
-      shaderProgram = CreateShaderProgram(
-          readFile("/Users/static/Documents/code/sdfs/shaders/sdf.vert"),
-          readFile(
-              "/Users/static/Documents/code/sdfs/shaders/single_object.frag"));
-    }
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -760,6 +723,7 @@ int main() {
 
       Light lighting{.T_self_world = sun.T_self_world};
 
+      const auto shaderProgram = shader.id();
       glUseProgram(shaderProgram);
       SetObjectUniforms(shaderProgram, camera, lighting, sun);
       glBindVertexArray(VAO);
@@ -794,7 +758,6 @@ int main() {
 
   glDeleteVertexArrays(1, &VAO);
   glDeleteBuffers(1, &VBO);
-  glDeleteProgram(shaderProgram);
 
   glfwTerminate();
   return 0;

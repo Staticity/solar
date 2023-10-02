@@ -89,6 +89,7 @@ GLuint CreateTexture(const std::string& filepath) {
     exit(-1);
   }
   // load and generate the texture
+  stbi_set_flip_vertically_on_load(true);
   int width, height, nrChannels;
   unsigned char* data =
       stbi_load(filepath.c_str(), &width, &height, &nrChannels, 0);
@@ -316,12 +317,73 @@ class ImguiOpenGLRenderer {
   int width_, height_;
 };
 
-class SPICEPose {
+class SPICEHelper {
  public:
-  SPICEPose() { init(); }
-  ~SPICEPose() { cleanup(); }
+  static SPICEHelper& getInstance() {
+    static SPICEHelper instance;
+    return instance;
+  }
 
-  Sophus::SE3d T_J2000_body(const std::string& body, double ephemerisTime) {
+  static Sophus::SE3d T_J2000_body(
+      const std::string& body, double ephemerisTime) {
+    return getInstance().T_J2000_body_impl(body, ephemerisTime);
+  }
+
+  static SpiceDouble EphemerisTimeNow() {
+    // Ensure the instance is instantitaed for kernels
+    (void)getInstance();
+
+    // Get the current UTC time
+    std::time_t t = std::time(nullptr);
+    char utc_time[40];
+    std::strftime(
+        utc_time, sizeof(utc_time), "%Y-%m-%dT%H:%M:%S", std::gmtime(&t));
+
+    // Convert UTC time to Ephemeris Time (ET)
+    SpiceDouble et;
+    utc2et_c(utc_time, &et);
+
+    return et;
+  }
+
+  static SpiceDouble EphemerisTimeFromDate(
+      int year,
+      int month,
+      int day,
+      int hours = 0,
+      int minutes = 0,
+      int seconds = 0) {
+    // Ensure the instance is instantiated for kernels
+    (void)getInstance();
+
+    // Format the input date into an ISO 8601 string
+    char utc_time[40];
+    snprintf(
+        utc_time,
+        sizeof(utc_time),
+        "%04d-%02d-%02dT%02d:%02d:%02d",
+        year,
+        month,
+        day,
+        hours,
+        minutes,
+        seconds);
+
+    // Convert UTC time string to Ephemeris Time (ET)
+    SpiceDouble et;
+    utc2et_c(utc_time, &et);
+
+    return et;
+  }
+
+ private:
+  SPICEHelper() { init(); }
+  ~SPICEHelper() { cleanup(); }
+
+  // Non-static implementation for T_J2000_body, which will be called by the
+  // static wrapper
+  Sophus::SE3d T_J2000_body_impl(
+      const std::string& body, double ephemerisTime) {
     SpiceDouble bodyState[6], lt;
     spkezr_c(
         body.c_str(), ephemerisTime, "J2000", "NONE", "EARTH", bodyState, &lt);
@@ -339,7 +401,6 @@ class SPICEPose {
         Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
   }
 
- private:
   const std::vector<std::string> kernelPaths_ = {
       "/Users/static/Downloads/cspice/data/naif0012.tls",
       "/Users/static/Downloads/cspice/data/de430.bsp",
@@ -356,6 +417,12 @@ class SPICEPose {
       unload_c(path.c_str());
     }
   }
+
+  // Delete copy and move constructors and assign operators
+  SPICEHelper(SPICEHelper const&) = delete; // Copy constructor
+  SPICEHelper(SPICEHelper&&) = delete; // Move constructor
+  SPICEHelper& operator=(SPICEHelper const&) = delete; // Copy assignment
+  SPICEHelper& operator=(SPICEHelper&&) = delete; // Move assignment
 };
 
 Sophus::SE3d LookAt(
@@ -527,8 +594,6 @@ int main() {
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 410");
 
-  stbi_set_flip_vertically_on_load(true);
-
   ReloadableShader shader(
       "/Users/static/Documents/code/sdfs/shaders/sdf.vert",
       "/Users/static/Documents/code/sdfs/shaders/single_object.frag");
@@ -567,21 +632,17 @@ int main() {
   bool hideEarth = false;
   // earth, up, moon, sun
   bool lookat[4] = {false, false, false, false};
-  auto start = std::chrono::high_resolution_clock::now();
   glEnable(GL_DEPTH_TEST);
-  SPICEPose solar;
 
-  // Convert the UTC time to ephemeris time (TDB)
-  // ConstSpiceChar* utc2 = "2021-03-30T12:00:00";
-  // SpiceDouble et2;
-  // str2et_c(utc2, &et2);
-  // solar.T_J2000_body("MARS", 0);
+  SpiceDouble currentEt = SPICEHelper::EphemerisTimeNow();
+  auto previousTime = std::chrono::high_resolution_clock::now();
   while (!glfwWindowShouldClose(window)) {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    ImGuiID dockspace_id =
+        ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+
     const char* lookatOptions[] = {
         "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
     static int currentLook = 2;
@@ -590,6 +651,7 @@ int main() {
     static int currentOrigin = 0;
 
     // ImGUI window creation
+
     ImGui::Begin("Controls");
     ImGui::Text("Time:");
     ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 31);
@@ -617,25 +679,17 @@ int main() {
     // Ends the window
     ImGui::End();
     // ImGui::Begin("DockSpace Demo"); // Create a new window
-    // ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
-    // ImGui::DockSpace(dockspace_id);
     // ImGui::End();
 
     // Calculate current time
-    const auto timeSecs =
-        (start - std::chrono::high_resolution_clock::now()).count() / 1e9;
+    const auto currentTime = std::chrono::high_resolution_clock::now();
+    const auto dtSecs = (previousTime - currentTime).count() / 1e9;
+    previousTime = currentTime;
 
-    // Define the UTC time for which you want the data
-    ConstSpiceChar* utc = "2021-03-30T12:00:00";
-
-    // Convert the UTC time to ephemeris time (TDB)
-    SpiceDouble et;
-    str2et_c(utc, &et);
-
-    et += timeSecs * 60 * 60 * 24 * daysPerSecond;
-    Sophus::SE3d T_J2000_earth = solar.T_J2000_body("EARTH", et);
-    Sophus::SE3d T_J2000_sun = solar.T_J2000_body("SUN", et);
-    Sophus::SE3d T_J2000_moon = solar.T_J2000_body("MOON", et);
+    currentEt += dtSecs * 60 * 60 * 24 * daysPerSecond;
+    Sophus::SE3d T_J2000_earth = SPICEHelper::T_J2000_body("EARTH", currentEt);
+    Sophus::SE3d T_J2000_sun = SPICEHelper::T_J2000_body("SUN", currentEt);
+    Sophus::SE3d T_J2000_moon = SPICEHelper::T_J2000_body("MOON", currentEt);
 
     earth.T_self_world = T_J2000_earth.inverse();
     sun.T_self_world = T_J2000_sun.inverse();

@@ -1,4 +1,3 @@
-#include <SpiceUsr.h>
 #include <Eigen/Eigen>
 #include <fstream>
 #include <iostream>
@@ -8,6 +7,8 @@
 #include <GL/glew.h>
 #include <Sophus/se3.hpp>
 #include <fmt/format.h>
+
+#include "cspice/include/SpiceUsr.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/imgui.h"
@@ -370,6 +371,8 @@ class SpiceKernelPackage {
     }
   }
 
+  const std::vector<std::filesystem::path> paths() const { return kernels_; }
+
  private:
   std::vector<std::filesystem::path> kernels_;
 };
@@ -465,16 +468,15 @@ class SPICEHelper {
     return et;
   }
 
- private:
   static const SpiceKernelPackage Kernels;
 };
 
 const SpiceKernelPackage SPICEHelper::Kernels = {{
     std::filesystem::path(__FILE__).parent_path() /
-        "spice/kernels/naif0012.tls",
-    std::filesystem::path(__FILE__).parent_path() / "spice/kernels/de440.bsp",
+        "cspice/kernels/naif0012.tls",
+    std::filesystem::path(__FILE__).parent_path() / "cspice/kernels/de440.bsp",
     std::filesystem::path(__FILE__).parent_path() /
-        "spice/kernels/pck00011.tpc",
+        "cspice/kernels/pck00011.tpc",
 }};
 
 class PerPixelVAO {
@@ -702,14 +704,10 @@ void SetObjectUniforms(
 int main() {
   OpenGLWindow window("Solar System", 1980, 1080, false);
   PerPixelVAO vao;
-
   ReloadableShader shader(
       std::filesystem::path(__FILE__).parent_path() / "shaders/sdf.vert",
       std::filesystem::path(__FILE__).parent_path() /
           "shaders/single_object.frag");
-
-  // Get the heliocentric position of Earth (which gives us the position of
-  // the Sun relative to Earth)
 
   // (void)SPICEHelper::T_J2000_body("MARS", 750578468.1823622);
 
@@ -735,10 +733,9 @@ int main() {
           std::filesystem::path(__FILE__).parent_path() / "assets/moon2.jpg"),
       .isMatte = false};
 
-  float daysPerSecond = 0; // .1;
-  float cameraFieldOfView = 1.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{39.2 / 180 * M_PI, -1.18 / 180 * M_PI, 3};
-  // Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
+  float daysPerSecond = .1;
+  float cameraFieldOfView = 60.0f / 180.0 * M_PI;
+  Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
   ImguiOpenGLRenderer gameTab("Game");
 

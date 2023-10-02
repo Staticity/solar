@@ -1,3 +1,4 @@
+#include <SpiceUsr.h>
 #include <Eigen/Eigen>
 #include <fstream>
 #include <iostream>
@@ -7,7 +8,6 @@
 #include <GL/glew.h>
 #include <Sophus/se3.hpp>
 #include <fmt/format.h>
-#include "SpiceUsr.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/imgui.h"

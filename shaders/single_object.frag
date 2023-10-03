@@ -1,6 +1,8 @@
 #version 410 core
 
 // Camera Parameters
+uniform vec2 resolution;
+uniform int orthographic;
 uniform mat3 K;
 
 // Light parameters
@@ -20,7 +22,7 @@ out vec4 FragColor;
 
 // Constants
 const float PI = 3.1415926535897932384626433832795;
-const int MaximumSteps = 1024;
+const int MaximumSteps = 2048;
 const float MaximumDistance = 1e6;
 const float MinimumDistanceRatio = 1e-6;
 
@@ -51,8 +53,8 @@ SDInfo signedDistance(vec3 position_world) {
         // UV calculation
         vec3 position_dir = normalize(position_shape);
         info.uv = vec2(
-            1 - (0.5 + atan(position_dir.y, position_dir.x) / (2.0 * PI)),
-            0.5 - asin(position_dir.z) / PI);
+            (0.5 + atan(position_dir.y, position_dir.x) / (2.0 * PI)),
+            asin(position_dir.z) / PI - 0.5);
     } else if (shapeType == 2) {
         float radius = shapeParameters[0].x;
         float height = shapeParameters[0].y;
@@ -60,11 +62,13 @@ SDInfo signedDistance(vec3 position_world) {
         info.dist = max(length(position_shape.xz) - radius, abs(position_shape.y) - height);
 
         // UV calculation
-        vec2 position_dir_xz = normalize(position_shape.xy);
-        info.uv = vec2(
-            (atan(position_dir_xz.y, position_dir_xz.x) + PI) / (2 * PI),
-            length(position_shape.xz) / radius
-        );
+        
+
+        // vec2 position_dir_xz = normalize(position_shape.xy);
+        // info.uv = vec2(
+        //     (atan(position_dir_xz.y, position_dir_xz.x) + PI) / (2 * PI),
+        //     length(position_shape.xz) / radius
+        // );
     } else {
         info.dist = 0;
         info.uv = vec2(0, 0);
@@ -78,7 +82,7 @@ vec3 sdfNormal(vec3 position_world) {
     //     return -normalize(vec4(position_world, 1).xyz);
     // }
 
-    float eps = 1e-5;// length(position_world) * MinimumDistanceRatio;
+    float eps = length(position_world) * 1e-3;
 
     float fx = signedDistance(position_world + vec3(eps, 0, 0)).dist;
     float fy = signedDistance(position_world + vec3(0, eps, 0)).dist;
@@ -130,33 +134,41 @@ void main() {
         T_shape_camera[2].xyz
     );
     vec3 t_shape_camera = T_shape_camera[3].xyz;
-    vec3 ray_camera = normalize(inverse(K) * vec3(gl_FragCoord.xy, 1.0));
+    vec3 ray_camera;
+    if (orthographic != 0) {
+        ray_camera = vec3(gl_FragCoord.xy/resolution.y + vec2(-0.5, -0.5), 1.0);
+    } else {
+        ray_camera = normalize(inverse(K) * vec3(gl_FragCoord.xy, 1.0));
+    }
     SDFHit result = raymarch(t_shape_camera, R_shape_camera * ray_camera);
 
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);
         vec3 light_direction = normalize(light_shape);
-        float intensity = max(1, dot(light_direction, result.normal));
+        float intensity = max(0, dot(light_direction, result.normal));
 
-
-        // If it's Matte, then no lighting affects it. It's always bright
+        // If it's matte, then no lighting affects it. It's always bright
         if (isMatte != 0) {
             intensity = 1;
         }
 
-        // SDFHit shadow = raymarch(result.position - light_world * MinimumDistance * 100, -light_world);
-
-        FragColor = textureColor * max(0, intensity);
+        FragColor = textureColor * max(1, intensity);
 
 
         // FragColor = vec4(light_direction, 1);
         gl_FragDepth = length(t_shape_camera - result.position) / MaximumDistance;
+
+        // if (dot(normalize(result.normal), vec3(1, 0, 0)) > .95) {
+        //     FragColor = vec4(result.normal, 1);
+        // }
+
         // if (result.steps > 10)
             // FragColor *= result.steps / float(MaximumSteps);
         // FragColor *= 1 - int(shadow.hit);
         // FragColor = vec4((1 + result.normal) / 2, 1);
         // FragColor = vec4(shadow.hit, shadow.hit, shadow.hit, 1);
-        // FragColor=vec4(0, result.uv.x, 1,1);
+        // if (length(result.uv - vec2(0, .5)) < .2)
+        // FragColor=vec4(result.uv, 0, 1);
         // FragColor=vec4(0,1,0,1);
         // FragColor=vec4(result.steps/MaximumSteps,0,0,1);
     } else {

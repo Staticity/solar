@@ -384,22 +384,27 @@ class SPICEHelper {
     return instance;
   }
 
-  static Sophus::SE3d T_J2000_body(
+  static Sophus::SO3d R_J2000_body(
       const std::string& body, double ephemerisTime) {
-    SpiceDouble bodyState[6], lt;
-    spkezr_c(
-        body.c_str(), ephemerisTime, "J2000", "NONE", "MOON", bodyState, &lt);
-
-    const std::string& fixedFrame = "IAU_" + body;
+    const std::string& fixedBoy = "IAU_" + body;
     SpiceDouble R_J2000_body[3][3];
-    pxform_c(fixedFrame.c_str(), "J2000", ephemerisTime, R_J2000_body);
+    pxform_c(fixedBoy.c_str(), "J2000", ephemerisTime, R_J2000_body);
+
     SpiceDouble q_J2000_body[4];
     m2q_c(R_J2000_body, q_J2000_body);
 
-    Eigen::Quaterniond J2000_body_xzy(
-        q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]);
+    return Sophus::SO3d(Eigen::Quaterniond(
+        q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]));
+  }
+
+  static Sophus::SE3d T_J2000_body(
+      const std::string& body, double ephemerisTime) {
+    SpiceDouble bodyState[6], lt;
+    spkezr_c(body.c_str(), ephemerisTime, "J2000", "NONE", "0", bodyState, &lt);
+
     return Sophus::SE3d(
-        J2000_body_xzy.matrix(),
+        // Sophus::SO3d(),
+        R_J2000_body(body, ephemerisTime),
         Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
   }
 
@@ -533,8 +538,8 @@ Sophus::SE3d LookAt(
   const Eigen::Vector3d right = (upHint.cross(forward)).normalized();
   const Eigen::Vector3d up = (forward.cross(right)).normalized();
   Eigen::Matrix3d R;
-  R.col(0) = right;
-  R.col(1) = up;
+  R.col(0) = -right;
+  R.col(1) = -up;
   R.col(2) = forward;
   return Sophus::SE3d(R, position_world);
 };
@@ -634,6 +639,8 @@ class OpenGLWindow {
 struct Camera {
   Sophus::SE3d T_world_self;
   Eigen::Matrix3f K;
+  Eigen::Vector2f resolution;
+  bool orthographic;
 };
 
 struct Light {
@@ -662,8 +669,12 @@ void SetObjectUniforms(
   const Eigen::Matrix3f& K = camera.K;
   const Eigen::Matrix4f T_shape_camera =
       (object.T_self_world * camera.T_world_self).matrix().cast<float>();
+  glUniform2fv(
+      glGetUniformLocation(shader, "resolution"), 1, camera.resolution.data());
   glUniformMatrix3fv(
       glGetUniformLocation(shader, "K"), 1, false, camera.K.data());
+  glUniform1i(
+      glGetUniformLocation(shader, "orthographic"), int(camera.orthographic));
   glUniformMatrix4fv(
       glGetUniformLocation(shader, "T_shape_camera"),
       1,
@@ -701,15 +712,141 @@ void SetObjectUniforms(
   glBindTexture(GL_TEXTURE_2D, object.texture.id());
 }
 
+namespace {
+
+struct PoseGroup {
+  double et;
+  Sophus::SE3d T_world_sun;
+  Sophus::SE3d T_world_earth;
+  Sophus::SE3d T_world_moon;
+};
+
+void TestDistance(const std::vector<PoseGroup>& yearTrajectory) {
+  {
+    double lo = std::numeric_limits<double>::infinity();
+    double hi = 0.0;
+    double total = 0.0;
+    for (const auto& [et, T_world_sun, T_world_earth, _] : yearTrajectory) {
+      const double distance =
+          (T_world_sun.inverse() * T_world_earth).translation().norm() / 1e3;
+      total += distance;
+      lo = std::min(lo, distance);
+      hi = std::max(hi, distance);
+    }
+    fmt::println(
+        "Distance to sun: min {:.2f}, max {:.2f}, avg {:.2f}",
+        lo,
+        hi,
+        total / yearTrajectory.size());
+  }
+
+  {
+    double lo = std::numeric_limits<double>::infinity();
+    double hi = 0.0;
+    double total = 0.0;
+    for (const auto& [et, _, T_world_earth, T_world_moon] : yearTrajectory) {
+      const double distance =
+          (T_world_moon.inverse() * T_world_earth).translation().norm() / 1e3;
+      total += distance;
+      lo = std::min(lo, distance);
+      hi = std::max(hi, distance);
+    }
+    fmt::println(
+        "Distance to moon: min {:.2f}, max {:.2f}, avg {:.2f}",
+        lo,
+        hi,
+        total / yearTrajectory.size());
+  }
+}
+
+Eigen::Vector4d fitPlane(const std::vector<Eigen::Vector3d>& points) {
+  // Check if we have enough points
+  if (points.size() < 3) {
+    throw std::runtime_error("Need at least three points to fit a plane");
+  }
+
+  // Calculate centroid
+  Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+  for (const auto& pt : points) {
+    centroid += pt;
+  }
+  centroid /= points.size();
+
+  // Assemble the data matrix
+  Eigen::MatrixXd A(3, points.size());
+  for (size_t i = 0; i < points.size(); i++) {
+    A.col(i) = points[i] - centroid;
+  }
+
+  // Compute the covariance matrix
+  Eigen::MatrixXd C = A * A.transpose();
+
+  // Perform Eigen decomposition
+  Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(C);
+  Eigen::Vector3d planeNormal = solver.eigenvectors().col(0);
+
+  // Plane equation: ax + by + cz + d = 0
+  // We know the normal is (a, b, c) and a point on the plane (the centroid)
+  // So, d = -normal.dot(centroid)
+  double d = -planeNormal.dot(centroid);
+
+  return Eigen::Vector4d(planeNormal(0), planeNormal(1), planeNormal(2), d);
+}
+
+void TestOrbitTilt(const std::vector<PoseGroup>& yearTrajectory) {
+  std::vector<Eigen::Vector3d> earthOrbitAroundSun;
+  for (const auto& [_, T_world_sun, T_world_earth, __] : yearTrajectory) {
+    earthOrbitAroundSun.push_back(
+        T_world_sun.inverse() * T_world_earth.translation());
+  }
+
+  const auto& pose = yearTrajectory.front();
+
+  const Eigen::Vector3d earthOrbitNormal =
+      fitPlane(earthOrbitAroundSun).head<3>().normalized();
+  fmt::println(
+      "Earth Orbit Tilt: {:.2f}",
+      180 / M_PI *
+          std::acos(earthOrbitNormal.dot(
+              pose.T_world_sun.so3().inverse() * pose.T_world_earth.so3() *
+              Eigen::Vector3d::UnitZ())));
+}
+
+void RunUnitTests() {
+  constexpr double secondsInDay = 60 * 60 * 24;
+  constexpr double secondsInYear = secondsInDay * 365.25;
+  constexpr auto startDate = 750578468.1823622;
+
+  // Collect poses every hour for the past year
+  std::vector<PoseGroup> yearTrajectory;
+  for (double et = startDate; et < startDate + secondsInYear;
+       et += secondsInDay) {
+    yearTrajectory.push_back({
+        et,
+        .T_world_sun = SPICEHelper::T_J2000_body("SUN", et),
+        .T_world_earth = SPICEHelper::T_J2000_body("EARTH", et),
+        .T_world_moon = SPICEHelper::T_J2000_body("MOON", et),
+    });
+  }
+
+  TestDistance(yearTrajectory);
+  TestOrbitTilt(yearTrajectory);
+}
+} // namespace
+
 int main() {
-  OpenGLWindow window("Solar System", 1980, 1080, false);
+  RunUnitTests();
+
+  OpenGLWindow window("Solar System", 1980, 1080, true);
   PerPixelVAO vao;
   ReloadableShader shader(
       std::filesystem::path(__FILE__).parent_path() / "shaders/sdf.vert",
       std::filesystem::path(__FILE__).parent_path() /
           "shaders/single_object.frag");
 
-  // (void)SPICEHelper::T_J2000_body("MARS", 750578468.1823622);
+  std::cout << SPICEHelper::T_J2000_body("EARTH", 750578468.1823622).matrix()
+            << std::endl;
+  ;
 
   SDFObject sun{
       .type = 1,
@@ -733,8 +870,9 @@ int main() {
           std::filesystem::path(__FILE__).parent_path() / "assets/moon2.jpg"),
       .isMatte = false};
 
-  float daysPerSecond = .1;
-  float cameraFieldOfView = 60.0f / 180.0 * M_PI;
+  float daysPerSecond = 0;
+  float cameraFieldOfView = 2.0f / 180.0 * M_PI; // 120.0f / 180.0 * M_PI;
+  // Eigen::Vector3f lla{0, 0, 1e4};
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
   ImguiOpenGLRenderer gameTab("Game");
@@ -744,10 +882,13 @@ int main() {
   bool lookat[4] = {false, false, false, false};
   glEnable(GL_DEPTH_TEST);
 
-  int ymdhms[6] = {2023, 10, 13, 0, 0, 0};
+  int ymdhms[6] = {2023, 10, 14, 16, 20, 0};
 
-  SpiceDouble currentEt = 750578468.1823622; // SPICEHelper::EphemerisTimeNow();
-
+  // SpiceDouble currentEt = 750578468.1823622; //
+  // SPICEHelper::EphemerisTimeNow();
+  SpiceDouble currentEt = SPICEHelper::EphemerisTimeFromDate(
+      ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]);
+  bool isOrthographic = false;
   auto previousTime = std::chrono::high_resolution_clock::now();
   while (!window.shouldClose()) {
     window.beginNewFrame();
@@ -776,10 +917,8 @@ int main() {
     // Slider that appears in the window
     ImGui::Combo(
         "Origins", &currentOrigin, originOptions, IM_ARRAYSIZE(originOptions));
-    ImGui::SliderFloat(
-        "Latitude", &lla.x(), 39 / 180.0 * M_PI, 40 / 180.0 * M_PI);
-    ImGui::SliderFloat(
-        "Longitude", &lla.y(), 1 / 180.0 * M_PI, 2 / 180.0 * M_PI);
+    ImGui::SliderAngle("Latitude", &lla.x(), -90, 90);
+    ImGui::SliderAngle("Longitude", &lla.y(), -180, 180);
     // ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
     // ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
     if (std::string(lookatOptions[currentLook]) ==
@@ -788,9 +927,10 @@ int main() {
     } else if (std::string(lookatOptions[currentLook]) == "SunTopDown") {
       ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 200e6f);
     } else {
-      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 5e4f);
+      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e4);
     }
     ImGui::Text("Camera Settings:");
+    ImGui::Checkbox("Orthographic", &isOrthographic);
     ImGui::SliderAngle("Vertical FoV", &cameraFieldOfView, 0, 120.0f);
     ImGui::Combo(
         "Look At", &currentLook, lookatOptions, IM_ARRAYSIZE(lookatOptions));
@@ -799,7 +939,7 @@ int main() {
 
     // Calculate current time
     const auto currentTime = std::chrono::high_resolution_clock::now();
-    const auto dtSecs = (previousTime - currentTime).count() / 1e9;
+    const auto dtSecs = (currentTime - previousTime).count() / 1e9;
     previousTime = currentTime;
 
     currentEt += dtSecs * 60 * 60 * 24 * daysPerSecond;
@@ -828,13 +968,17 @@ int main() {
 
     const std::string chosenLook = lookatOptions[currentLook];
     const auto R = earth.parameters.at(0);
-    const auto lat = -lla.x();
-    const auto lon = -lla.y();
+    const auto lat = lla.x();
+    const auto lon = lla.y();
     const auto alt = lla.z() / 1e3;
-    Eigen::Vector3d camera_earth = {
-        (R + alt) * std::cos(lat) * std::cos(lon),
-        (R + alt) * std::cos(lat) * std::sin(lon),
-        (R + alt) * std::sin(lat)};
+    // Eigen::Vector3d camera_earth = {
+    //     (R + alt) * std::cos(lat) * std::cos(lon),
+    //     (R + alt) * std::cos(lat) * std::sin(lon),
+    //     (R + alt) * std::sin(lat)};
+    Eigen::Vector3d camera_earth;
+    latrec_c(R, lon, lat, camera_earth.data());
+    // reclat_c();
+    camera_earth += camera_earth.normalized() * alt;
 
     if (chosenLook == "Earth") {
       T_earth_camera = LookAt(
@@ -930,7 +1074,10 @@ int main() {
     K << fy, 0, width / 2.0, 0, fy, height / 2.0, 0, 0, 1;
 
     Camera camera{
-        .T_world_self = earth.T_self_world.inverse() * T_earth_camera, .K = K};
+        .T_world_self = earth.T_self_world.inverse() * T_earth_camera,
+        .K = K,
+        .resolution = {width, height},
+        .orthographic = isOrthographic};
 
     Light lighting{.T_self_world = sun.T_self_world};
 

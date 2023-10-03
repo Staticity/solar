@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <vector>
 #include <GL/glew.h>
@@ -851,11 +852,11 @@ class SolarSystemState {
     return T_origin_J2000 * T_J2000_body(id);
   }
 
-  Eigen::Vector3d bodyLla_origin(
-      BodyId id, double longitude, double latitude, double altitude) const {
+  Eigen::Vector3d position_body(
+      BodyId id, double latitude, double longitude, double altitude) const {
     Eigen::Vector3d position_body;
     latrec_c(bodies_.at(id).radius, longitude, latitude, position_body.data());
-    return T_origin_body(id) * position_body;
+    return position_body + position_body.normalized() * altitude;
   }
 
   const std::map<BodyId, PlanetState>& bodies() { return bodies_; }
@@ -887,7 +888,7 @@ int main() {
   const std::filesystem::path parentDirectory =
       std::filesystem::path(__FILE__).parent_path();
 
-  OpenGLWindow window("Solar System", 1980, 1080, true);
+  OpenGLWindow window("Solar System", 1980, 1080, false);
   PerPixelVAO vao;
   ReloadableShader shader(
       parentDirectory / "shaders/sdf.vert",
@@ -902,18 +903,24 @@ int main() {
        ReloadableTexture(parentDirectory / "assets/earth.jpg")},
       {SolarSystemState::MOON,
        ReloadableTexture(parentDirectory / "assets/moon.jpg")},
-      {SolarSystemState::MARS, ReloadableTexture(173, 98, 66)}};
+      {SolarSystemState::MARS,
+       ReloadableTexture(parentDirectory / "assets/mars.jpg")}};
   ImguiOpenGLRenderer gameTab("Game");
 
   float daysPerSecond = 0;
-  float cameraFieldOfView = 2.0f / 180.0 * M_PI; // 120.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
+  float cameraFieldOfViewDegs = .01f / 180.0 * M_PI; // 120.0f / 180.0 * M_PI;
+  Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3300};
 
-  bool hideEarth = false;
+  bool hideFromBody = false;
   bool isOrthographic = false;
   bool reverseTime = false;
   bool stepMode = false;
-  int ymdhms[6] = {2023, 10, 14, 14, 15, 0};
+  int ymdhms[6] = {2007, 10, 3, 5, 20, 0};
+  int selectedCameraMode = 0;
+  int selectedFromBody = 3;
+  int selectedToBody = 1;
+
+  Eigen::Vector2f pitchYaw{0, 0};
 
   systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
       ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
@@ -931,6 +938,7 @@ int main() {
     }
     previousTime = currentTime;
 
+#if 0
     const char* lookatOptions[] = {
         "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
     static int currentLook = 2;
@@ -990,7 +998,7 @@ int main() {
     ImGui::Checkbox("Orthographic", &isOrthographic);
     ImGui::SliderAngle(
         "Horizontal FoV",
-        &cameraFieldOfView,
+        &cameraFieldOfViewDegs,
         1,
         120.0f,
         "%.0f deg",
@@ -1000,7 +1008,7 @@ int main() {
     ImGui::Checkbox("Hide Earth", &hideEarth);
     ImGui::End();
 
-    Sophus::SE3d T_earth_camera;
+        Sophus::SE3d T_earth_camera;
 
     const std::string chosenLook = lookatOptions[currentLook];
     const auto R = systemState.bodies().at(SolarSystemState::EARTH).radius;
@@ -1061,19 +1069,130 @@ int main() {
           T_earth_sun * Eigen::Vector3d::Zero(),
           Eigen::Vector3d::UnitY());
     }
+#endif
+
+    Sophus::SE3d T_origin_camera;
+
+    ImGui::Begin("Scene Controls:");
+    const auto dateStr =
+        SpiceHelper::EphemerisTimeToDate(systemState.getTime());
+    ImGui::Text("Current Date: %s", dateStr.c_str());
+    ImGui::Spacing();
+    ImGui::Text("Time Controls:");
+    ImGui::DragFloat(
+        "Days per Second",
+        &daysPerSecond,
+        1.0,
+        0,
+        31,
+        "%.3f",
+        ImGuiSliderFlags_Logarithmic);
+    ImGui::Checkbox("Reverse time", &reverseTime);
+    ImGui::Checkbox("Enable Step Mode", &stepMode);
+    if (stepMode) {
+      if (ImGui::Button("Step")) {
+        systemState.setTime(systemState.getTime() + dtSecs);
+      } else if (ImGui::Button("Step Day")) {
+        systemState.setTime(
+            systemState.getTime() + 60 * 60 * 24 * (reverseTime ? -1 : 1));
+      }
+    } else {
+      systemState.setTime(
+          systemState.getTime() +
+          dtSecs * 60 * 60 * 24 * daysPerSecond * (reverseTime ? -1 : 1));
+    }
+    ImGui::Text("Modify Date (UTC):");
+    ImGui::InputInt3("Year/Month/Day", ymdhms);
+    ImGui::InputInt3("Hour/Minute/Second", ymdhms + 3);
+    if (ImGui::Button("Apply")) {
+      systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
+          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Camera Controls:");
+    ImGui::Checkbox("Orthographic", &isOrthographic);
+    ImGui::DragFloat(
+        "Horizontal FoV",
+        &cameraFieldOfViewDegs,
+        1.0,
+        1,
+        120.0f,
+        "%.0f deg",
+        ImGuiSliderFlags_Logarithmic);
+    ImGui::Spacing();
+    const char* cameraModes[] = {"BodyToBody", "TopDown"};
+    ImGui::Combo("Mode", &selectedCameraMode, cameraModes, 2);
+    const std::string cameraMode = cameraModes[selectedCameraMode];
+    std::set<SolarSystemState::BodyId> hiddenBodies;
+    if (cameraMode == "BodyToBody") {
+      static const std::map<std::string, SolarSystemState::BodyId>
+          bodyFromString{
+              {"Earth", SolarSystemState::EARTH},
+              {"Sun", SolarSystemState::SUN},
+              {"Moon", SolarSystemState::MOON},
+              {"Mars", SolarSystemState::MARS}};
+      const char* bodies[] = {"North", "Earth", "Sun", "Moon", "Mars"};
+      ImGui::Text("Bodies:");
+      ImGui::Combo("From", &selectedFromBody, bodies + 1, 4);
+      ImGui::Combo("To", &selectedToBody, bodies, 5);
+      ImGui::Checkbox("Hide From?", &hideFromBody);
+      const auto fromBodyId = bodyFromString.at(bodies[selectedFromBody + 1]);
+      if (hideFromBody) {
+        hiddenBodies.insert(fromBodyId);
+      }
+      ImGui::Text("Position:");
+      ImGui::SliderAngle("Latitude", &lla.x(), -90, 90);
+      ImGui::SliderAngle("Longitude", &lla.y(), -180, 180);
+      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1, 1e4);
+      ImGui::Text("Viewing Angle:");
+      ImGui::SliderAngle("Pitch", &pitchYaw.x(), -90, 90);
+      ImGui::SliderAngle("Yaw", &pitchYaw.y(), -180, 180);
+      const Eigen::Vector3d position_fromBody = systemState.position_body(
+          fromBodyId, lla.x(), lla.y(), lla.z() / 1e3);
+
+      const Eigen::Vector3d up = position_fromBody.normalized();
+      const Eigen::Vector3d north =
+          Eigen::Vector3d::UnitZ() + -Eigen::Vector3d::UnitZ().dot(up) * up;
+
+      if (selectedToBody == 0) {
+        const Sophus::SO3d R_mount_camera =
+            Sophus::SO3d::rotY(pitchYaw.y()) * Sophus::SO3d::rotX(pitchYaw.x());
+
+        const Sophus::SE3d T_fromBody_mount =
+            LookAt(position_fromBody, position_fromBody + north, up);
+        T_origin_camera = systemState.T_origin_body(fromBodyId) *
+            T_fromBody_mount *
+            Sophus::SE3d(R_mount_camera, Eigen::Vector3d::Zero());
+      } else {
+        const Sophus::SO3d R_mount_camera = Sophus::SO3d::rotZ(pitchYaw.y());
+        const Eigen::Vector3d mount_origin =
+            systemState.T_origin_body(fromBodyId) * position_fromBody;
+
+        const auto toBodyId = bodyFromString.at(bodies[selectedToBody]);
+        const Eigen::Vector3d toBody_origin =
+            systemState.T_origin_body(toBodyId).translation();
+
+        T_origin_camera = LookAt(mount_origin, toBody_origin, up) *
+            Sophus::SE3d(R_mount_camera, Eigen::Vector3d::Zero());
+      }
+    } else if (cameraMode == "TopDown") {
+    }
+
+    ImGui::End();
 
     gameTab.bind();
     gameTab.clear();
     const ImVec2 size = gameTab.size();
     const auto [width, height] = size;
 
-    const auto fx = (width / 2.0) / tan(cameraFieldOfView / 2.0);
+    const auto fx =
+        (width / 2.0) / tan(cameraFieldOfViewDegs / 180 * M_PI / 2.0);
     Eigen::Matrix3f K;
     K << fx, 0, width / 2.0, 0, fx, height / 2.0, 0, 0, 1;
 
     Camera camera{
-        .T_world_self =
-            systemState.T_origin_body(SolarSystemState::EARTH) * T_earth_camera,
+        .T_world_self = T_origin_camera,
         .K = K,
         .resolution = {width, height},
         .orthographic = isOrthographic};
@@ -1095,28 +1214,18 @@ int main() {
     const auto shaderProgram = shader.id();
     glUseProgram(shaderProgram);
     glBindVertexArray(vao.id());
-    SetObjectUniforms(
-        shaderProgram,
-        camera,
-        lighting,
-        createObject(SolarSystemState::SUN, true));
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    SetObjectUniforms(
-        shaderProgram, camera, lighting, createObject(SolarSystemState::MOON));
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    if (!hideEarth) {
+    for (const auto& [bodyId, _] : systemState.bodies()) {
+      if (hiddenBodies.count(bodyId)) {
+        continue;
+      }
+
       SetObjectUniforms(
           shaderProgram,
           camera,
           lighting,
-          createObject(SolarSystemState::EARTH));
+          createObject(bodyId, bodyId == SolarSystemState::SUN));
       glDrawArrays(GL_TRIANGLES, 0, 6);
     }
-    // if (object) {
-    //   fmt::println("Rendering object..");
-    //   SetObjectUniforms(shaderProgram, camera, lighting, *object);
-    //   glDrawArrays(GL_TRIANGLES, 0, 6);
-    // }
     gameTab.unbind();
 
     window.finishFrame();

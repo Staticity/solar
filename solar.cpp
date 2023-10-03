@@ -18,6 +18,8 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 #include <GLFW/glfw3.h>
 
@@ -306,6 +308,8 @@ class ImguiOpenGLRenderer {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
   }
+
+  GLuint texture() { return texture_; }
 
  private:
   void resizeAttachments(int newWidth, int newHeight) {
@@ -908,19 +912,19 @@ int main() {
   ImguiOpenGLRenderer gameTab("Game");
 
   float daysPerSecond = 0;
-  float cameraFieldOfViewDegs = .01f / 180.0 * M_PI; // 120.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3300};
+  float cameraFieldOfViewDegs = 120.0; // 120.0f / 180.0 * M_PI;
+  Eigen::Vector3f lla{0 / 180.0 * M_PI, 87.0 / 180 * M_PI, .1};
 
   bool hideFromBody = false;
   bool isOrthographic = false;
   bool reverseTime = false;
-  bool stepMode = false;
-  int ymdhms[6] = {2007, 10, 3, 5, 20, 0};
+  bool stepMode = true;
+  int ymdhms[6] = {2004, 01, 1, 5, 00, 00};
   int selectedCameraMode = 0;
-  int selectedFromBody = 3;
-  int selectedToBody = 1;
+  int selectedFromBody = 0;
+  int selectedToBody = 0;
 
-  Eigen::Vector2f pitchYaw{0, 0};
+  Eigen::Vector2f pitchYaw{90.0 / 180 * M_PI, -90. / 180.0 * M_PI};
 
   systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
       ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
@@ -936,140 +940,6 @@ int main() {
     if (reverseTime) {
       dtSecs *= -1;
     }
-    previousTime = currentTime;
-
-#if 0
-    const char* lookatOptions[] = {
-        "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
-    static int currentLook = 2;
-
-    const char* originOptions[] = {"J2000", "Earth", "Moon", "Sun"};
-    static int currentOrigin = 0;
-
-    // ImGUI window creation
-    ImGui::Begin("Controls");
-    const auto dateStr =
-        SpiceHelper::EphemerisTimeToDate(systemState.getTime());
-    ImGui::Text("Current Date: %s", dateStr.c_str());
-    ImGui::Text("Time:");
-    ImGui::SliderFloat(
-        "Days per Second",
-        &daysPerSecond,
-        0,
-        31,
-        "%.3f",
-        ImGuiSliderFlags_Logarithmic);
-    ImGui::Checkbox("Reverse time", &reverseTime);
-    ImGui::Checkbox("Enable Step Mode", &stepMode);
-    if (stepMode) {
-      if (ImGui::Button("Step")) {
-        systemState.setTime(systemState.getTime() + dtSecs);
-      } else if (ImGui::Button("Step Day")) {
-        systemState.setTime(systemState.getTime() + 60 * 60 * 24);
-      }
-    } else {
-      systemState.setTime(
-          systemState.getTime() + dtSecs * 60 * 60 * 24 * daysPerSecond);
-    }
-    ImGui::Text("Modify Date (UTC):");
-    ImGui::InputInt3("Year/Month/Day", ymdhms);
-    ImGui::InputInt3("Hour/Minute/Second", ymdhms + 3);
-    if (ImGui::Button("Apply")) {
-      systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
-          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
-    }
-
-    // Text that appears in the window
-    ImGui::Text("Camera Position:");
-    // Slider that appears in the window
-    ImGui::Combo(
-        "Origins", &currentOrigin, originOptions, IM_ARRAYSIZE(originOptions));
-    ImGui::SliderAngle("Latitude", &lla.x(), -90, 90);
-    ImGui::SliderAngle("Longitude", &lla.y(), -180, 180);
-    if (std::string(lookatOptions[currentLook]) ==
-        std::string("EarthTopDown")) {
-      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e6f);
-    } else if (std::string(lookatOptions[currentLook]) == "SunTopDown") {
-      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 200e6f);
-    } else {
-      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e4);
-    }
-    ImGui::Text("Camera Settings:");
-    ImGui::Checkbox("Orthographic", &isOrthographic);
-    ImGui::SliderAngle(
-        "Horizontal FoV",
-        &cameraFieldOfViewDegs,
-        1,
-        120.0f,
-        "%.0f deg",
-        ImGuiSliderFlags_Logarithmic);
-    ImGui::Combo(
-        "Look At", &currentLook, lookatOptions, IM_ARRAYSIZE(lookatOptions));
-    ImGui::Checkbox("Hide Earth", &hideEarth);
-    ImGui::End();
-
-        Sophus::SE3d T_earth_camera;
-
-    const std::string chosenLook = lookatOptions[currentLook];
-    const auto R = systemState.bodies().at(SolarSystemState::EARTH).radius;
-    const auto lat = lla.x();
-    const auto lon = lla.y();
-    const auto alt = lla.z() / 1e3;
-
-    Eigen::Vector3d camera_earth;
-    latrec_c(R, lon, lat, camera_earth.data());
-    camera_earth += camera_earth.normalized() * alt;
-
-    const std::string origin = originOptions[currentOrigin];
-    if (origin == "Earth") {
-      systemState.setOrigin(SolarSystemState::EARTH);
-    } else if (origin == "Moon") {
-      systemState.setOrigin(SolarSystemState::MOON);
-    } else if (origin == "Sun") {
-      systemState.setOrigin(SolarSystemState::SUN);
-    }
-
-    if (chosenLook == "Earth") {
-      T_earth_camera = LookAt(
-          camera_earth, Eigen::Vector3d::Zero(), Eigen::Vector3d::UnitZ());
-    } else if (chosenLook == "Horizon") {
-      T_earth_camera = LookAt(
-          camera_earth,
-          camera_earth + Eigen::Vector3d::UnitY(),
-          -camera_earth.normalized());
-    } else if (chosenLook == "Moon") {
-      const Sophus::SE3d T_earth_moon =
-          systemState.T_origin_body(SolarSystemState::EARTH).inverse() *
-          systemState.T_origin_body(SolarSystemState::MOON);
-      T_earth_camera = LookAt(
-          camera_earth,
-          T_earth_moon.translation(),
-          T_earth_moon.so3() * Eigen::Vector3d::UnitZ());
-    } else if (chosenLook == "Sun") {
-      const Sophus::SE3d T_earth_sun =
-          systemState.T_origin_body(SolarSystemState::EARTH).inverse() *
-          systemState.T_origin_body(SolarSystemState::SUN);
-      T_earth_camera = LookAt(
-          camera_earth,
-          T_earth_sun.translation(),
-          T_earth_sun.so3() * Eigen::Vector3d::UnitZ());
-    } else if (chosenLook == "EarthTopDown") {
-      T_earth_camera = LookAt(
-          Eigen::Vector3d::UnitZ() *
-              (systemState.radius(SolarSystemState::EARTH) + alt),
-          Eigen::Vector3d::Zero(),
-          Eigen::Vector3d::UnitY());
-    } else if (chosenLook == "SunTopDown") {
-      const Sophus::SE3d T_earth_sun =
-          systemState.T_origin_body(SolarSystemState::EARTH).inverse() *
-          systemState.T_origin_body(SolarSystemState::SUN);
-
-      T_earth_camera = LookAt(
-          T_earth_sun * Eigen::Vector3d::UnitZ() * (alt),
-          T_earth_sun * Eigen::Vector3d::Zero(),
-          Eigen::Vector3d::UnitY());
-    }
-#endif
 
     Sophus::SE3d T_origin_camera;
 
@@ -1179,7 +1049,37 @@ int main() {
     } else if (cameraMode == "TopDown") {
     }
 
+    ImGui::Text("Capture Images:");
+    char buffer[512];
+    ImGui::InputText("Output Directory", buffer, 512, 0);
+    const std::filesystem::path saveDirectory =
+        "/Users/static/Downloads/equator"; // buffer;
+    if (ImGui::Button("Save Picture")) {
+      if (!saveDirectory.empty() && std::filesystem::exists(saveDirectory)) {
+        std::string modifiedDateStr = dateStr;
+        for (char& c : modifiedDateStr)
+          if (c == ':')
+            c = '-';
+        modifiedDateStr = fmt::format("{}.png", modifiedDateStr);
+        const auto [widthF, heightF] = gameTab.size();
+        const GLuint textureID = gameTab.texture();
+        const int width = int(widthF);
+        const int height = int(heightF);
+
+        // Create a buffer to hold the pixel data.
+        GLubyte* pixels =
+            new GLubyte[width * height * 4]; // Assuming 4 channels (RGBA)
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        const std::filesystem::path filepath = saveDirectory / modifiedDateStr;
+        stbi_write_png(filepath.c_str(), width, height, 4, pixels, width * 4);
+      }
+    }
+
     ImGui::End();
+    previousTime = currentTime;
 
     gameTab.bind();
     gameTab.clear();

@@ -152,7 +152,7 @@ void main() {
             intensity = 1;
         }
 
-        FragColor = textureColor * max(1, intensity);
+        FragColor = textureColor * max(0, intensity);
 
 
         // FragColor = vec4(light_direction, 1);

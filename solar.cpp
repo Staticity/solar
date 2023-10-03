@@ -912,6 +912,7 @@ int main() {
   bool hideEarth = false;
   bool isOrthographic = false;
   bool reverseTime = false;
+  bool stepMode = false;
   int ymdhms[6] = {2023, 10, 14, 14, 15, 0};
 
   systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
@@ -921,6 +922,14 @@ int main() {
   glEnable(GL_DEPTH_TEST);
   while (!window.shouldClose()) {
     window.beginNewFrame();
+
+    // Calculate current time
+    const auto currentTime = std::chrono::high_resolution_clock::now();
+    auto dtSecs = (currentTime - previousTime).count() / 1e9;
+    if (reverseTime) {
+      dtSecs *= -1;
+    }
+    previousTime = currentTime;
 
     const char* lookatOptions[] = {
         "Earth", "Horizon", "Moon", "Sun", "EarthTopDown", "SunTopDown"};
@@ -943,6 +952,17 @@ int main() {
         "%.3f",
         ImGuiSliderFlags_Logarithmic);
     ImGui::Checkbox("Reverse time", &reverseTime);
+    ImGui::Checkbox("Enable Step Mode", &stepMode);
+    if (stepMode) {
+      if (ImGui::Button("Step")) {
+        systemState.setTime(systemState.getTime() + dtSecs);
+      } else if (ImGui::Button("Step Day")) {
+        systemState.setTime(systemState.getTime() + 60 * 60 * 24);
+      }
+    } else {
+      systemState.setTime(
+          systemState.getTime() + dtSecs * 60 * 60 * 24 * daysPerSecond);
+    }
     ImGui::Text("Modify Date (UTC):");
     ImGui::InputInt3("Year/Month/Day", ymdhms);
     ImGui::InputInt3("Hour/Minute/Second", ymdhms + 3);
@@ -969,9 +989,9 @@ int main() {
     ImGui::Text("Camera Settings:");
     ImGui::Checkbox("Orthographic", &isOrthographic);
     ImGui::SliderAngle(
-        "Vertical FoV",
+        "Horizontal FoV",
         &cameraFieldOfView,
-        0,
+        1,
         120.0f,
         "%.0f deg",
         ImGuiSliderFlags_Logarithmic);
@@ -979,17 +999,6 @@ int main() {
         "Look At", &currentLook, lookatOptions, IM_ARRAYSIZE(lookatOptions));
     ImGui::Checkbox("Hide Earth", &hideEarth);
     ImGui::End();
-
-    // Calculate current time
-    const auto currentTime = std::chrono::high_resolution_clock::now();
-    auto dtSecs = (currentTime - previousTime).count() / 1e9;
-    if (reverseTime) {
-      dtSecs *= -1;
-    }
-    previousTime = currentTime;
-
-    systemState.setTime(
-        systemState.getTime() + dtSecs * 60 * 60 * 24 * daysPerSecond);
 
     Sophus::SE3d T_earth_camera;
 
@@ -1058,9 +1067,9 @@ int main() {
     const ImVec2 size = gameTab.size();
     const auto [width, height] = size;
 
-    const auto fy = (height / 2.0) / tan(cameraFieldOfView / 2.0);
+    const auto fx = (width / 2.0) / tan(cameraFieldOfView / 2.0);
     Eigen::Matrix3f K;
-    K << fy, 0, width / 2.0, 0, fy, height / 2.0, 0, 0, 1;
+    K << fx, 0, width / 2.0, 0, fx, height / 2.0, 0, 0, 1;
 
     Camera camera{
         .T_world_self =

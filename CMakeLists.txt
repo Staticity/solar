@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(SDF)
+project(solar)
 
 # Specify the required C++ standard
 set(CMAKE_CXX_STANDARD 20)

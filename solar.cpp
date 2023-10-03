@@ -1052,8 +1052,7 @@ int main() {
     ImGui::Text("Capture Images:");
     char buffer[512];
     ImGui::InputText("Output Directory", buffer, 512, 0);
-    const std::filesystem::path saveDirectory =
-        "/Users/static/Downloads/equator"; // buffer;
+    const std::filesystem::path saveDirectory = buffer;
     if (ImGui::Button("Save Picture")) {
       if (!saveDirectory.empty() && std::filesystem::exists(saveDirectory)) {
         std::string modifiedDateStr = dateStr;

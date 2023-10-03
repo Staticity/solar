@@ -211,40 +211,24 @@ class ReloadableTexture {
     load(filepath);
   }
 
-  ~ReloadableTexture() { glDeleteTextures(1, &texture_); }
-
-  ReloadableTexture(const ReloadableTexture&) = delete;
-  ReloadableTexture& operator=(const ReloadableTexture&) = delete;
-
-  ReloadableTexture(ReloadableTexture&& other) noexcept
-      : texture_(other.texture_), filepath_(std::move(other.filepath_)) {
-    other.texture_ = 0; // Transfer ownership
-  }
-
-  ReloadableTexture& operator=(ReloadableTexture&& other) noexcept {
-    if (this != &other) {
-      glDeleteTextures(1, &texture_); // Clean up existing texture
-      texture_ = other.texture_;
-      filepath_ = std::move(other.filepath_);
-      other.texture_ = 0; // Transfer ownership
-    }
-    return *this;
-  }
-
   void load(const std::filesystem::path& path) {
     filepath_ = FileModifiedTracker(path);
+    release();
     texture_ = CreateTexture(filepath_->path());
   }
 
-  void maybeReload() const {
+  void maybeReload() {
     if (filepath_ && filepath_->wasModified()) {
+      release();
       texture_ = CreateTexture(filepath_->path());
     }
   }
 
-  GLuint id() const {
-    maybeReload();
-    return texture_;
+  GLuint id() { return texture_; }
+
+  void release() {
+    texture_ = 0;
+    glDeleteTextures(1, &texture_);
   }
 
  private:
@@ -377,18 +361,17 @@ class SpiceKernelPackage {
   std::vector<std::filesystem::path> kernels_;
 };
 
-class SPICEHelper {
+class SpiceHelper {
  public:
-  static SPICEHelper& getInstance() {
-    static SPICEHelper instance;
+  static SpiceHelper& getInstance() {
+    static SpiceHelper instance;
     return instance;
   }
 
   static Sophus::SO3d R_J2000_body(
       const std::string& body, double ephemerisTime) {
-    const std::string& fixedBoy = "IAU_" + body;
     SpiceDouble R_J2000_body[3][3];
-    pxform_c(fixedBoy.c_str(), "J2000", ephemerisTime, R_J2000_body);
+    pxform_c(body.c_str(), "J2000", ephemerisTime, R_J2000_body);
 
     SpiceDouble q_J2000_body[4];
     m2q_c(R_J2000_body, q_J2000_body);
@@ -397,15 +380,17 @@ class SPICEHelper {
         q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]));
   }
 
-  static Sophus::SE3d T_J2000_body(
+  static Eigen::Vector3d position_J2000(
       const std::string& body, double ephemerisTime) {
     SpiceDouble bodyState[6], lt;
     spkezr_c(body.c_str(), ephemerisTime, "J2000", "NONE", "0", bodyState, &lt);
+    return Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3;
+  }
 
+  static Sophus::SE3d T_J2000_body(
+      const std::string& body, double ephemerisTime) {
     return Sophus::SE3d(
-        // Sophus::SO3d(),
-        R_J2000_body(body, ephemerisTime),
-        Eigen::Vector3d(bodyState[0], bodyState[1], bodyState[2]) / 1e3);
+        R_J2000_body(body, ephemerisTime), position_J2000(body, ephemerisTime));
   }
 
   static Eigen::Vector3d Radii(const std::string& body) {
@@ -413,13 +398,6 @@ class SPICEHelper {
     SpiceDouble radiiiKm[3];
 
     bodvrd_c(body.c_str(), "RADII", 3, &dim, radiiiKm);
-    fmt::println(
-        "Body: {}, Radii: {} {} {}",
-        body,
-        radiiiKm[0],
-        radiiiKm[1],
-        radiiiKm[2]);
-
     return Eigen::Vector3d(radiiiKm[0], radiiiKm[1], radiiiKm[2]) / 1e3;
   }
 
@@ -439,7 +417,7 @@ class SPICEHelper {
 
   static std::string EphemerisTimeToDate(SpiceDouble et) {
     char utc_time[40];
-    et2utc_c(et, "%Y-%m-%dT%H:%M:%S", 0, 40, utc_time);
+    et2utc_c(et, "C", 0, 40, utc_time);
     return std::string(utc_time);
   }
 
@@ -476,7 +454,7 @@ class SPICEHelper {
   static const SpiceKernelPackage Kernels;
 };
 
-const SpiceKernelPackage SPICEHelper::Kernels = {{
+const SpiceKernelPackage SpiceHelper::Kernels = {{
     std::filesystem::path(__FILE__).parent_path() /
         "cspice/kernels/naif0012.tls",
     std::filesystem::path(__FILE__).parent_path() / "cspice/kernels/de440.bsp",
@@ -653,7 +631,7 @@ struct SDFObject {
   int type;
   Sophus::SE3d T_self_world;
   std::vector<float> parameters;
-  ReloadableTexture texture;
+  GLuint texture;
 
   bool isMatte = false;
 };
@@ -709,7 +687,7 @@ void SetObjectUniforms(
       params.size() / 4,
       params.data());
 
-  glBindTexture(GL_TEXTURE_2D, object.texture.id());
+  glBindTexture(GL_TEXTURE_2D, object.texture);
 }
 
 namespace {
@@ -823,9 +801,9 @@ void RunUnitTests() {
        et += secondsInDay) {
     yearTrajectory.push_back({
         et,
-        .T_world_sun = SPICEHelper::T_J2000_body("SUN", et),
-        .T_world_earth = SPICEHelper::T_J2000_body("EARTH", et),
-        .T_world_moon = SPICEHelper::T_J2000_body("MOON", et),
+        .T_world_sun = SpiceHelper::T_J2000_body("SUN", et),
+        .T_world_earth = SpiceHelper::T_J2000_body("EARTH", et),
+        .T_world_moon = SpiceHelper::T_J2000_body("MOON", et),
     });
   }
 
@@ -834,62 +812,113 @@ void RunUnitTests() {
 }
 } // namespace
 
+class SolarSystemState {
+ public:
+  enum BodyId { J2000 = -1, EARTH, MOON, MARS, SUN };
+
+  struct PlanetState {
+    BodyId id;
+    double radius;
+  };
+
+  SolarSystemState() : ephemerisTime_(0.0f), origin_(SUN) {
+    const std::vector<BodyId> bodies = {EARTH, MOON, MARS, SUN};
+    for (const auto body : bodies) {
+      bodies_[body] = PlanetState{
+          .id = body,
+          .radius = SpiceHelper::Radii(BodyNames[body][2]).mean(),
+      };
+    }
+  }
+
+  void setTime(double newEphemerisTime) {
+    ephemerisTime_ = newEphemerisTime;
+    setOrigin(origin_); // Refresh origin and its adjacent members
+  }
+
+  double getTime() const { return ephemerisTime_; }
+
+  void setOrigin(BodyId body) {
+    origin_ = body;
+    T_origin_J2000 = T_J2000_body(body).inverse();
+  }
+
+  BodyId origin() const { return origin_; }
+
+  double radius(BodyId id) const { return bodies_.at(id).radius; }
+
+  Sophus::SE3d T_origin_body(BodyId id) const {
+    return T_origin_J2000 * T_J2000_body(id);
+  }
+
+  Eigen::Vector3d bodyLla_origin(
+      BodyId id, double longitude, double latitude, double altitude) const {
+    Eigen::Vector3d position_body;
+    latrec_c(bodies_.at(id).radius, longitude, latitude, position_body.data());
+    return T_origin_body(id) * position_body;
+  }
+
+  const std::map<BodyId, PlanetState>& bodies() { return bodies_; }
+
+ private:
+  // Stored as: {position_name, rotation_name, radii_name}
+  static constexpr const char* BodyNames[4][3] = {
+      {"EARTH", "IAU_EARTH", "EARTH"},
+      {"MOON", "IAU_MOON", "MOON"},
+      {"MARS BARYCENTER", "IAU_MARS", "MARS"},
+      {"SUN", "IAU_SUN", "SUN"},
+  };
+
+  Sophus::SE3d T_J2000_body(BodyId id) const {
+    const auto index = static_cast<int>(id);
+    return Sophus::SE3d(
+        SpiceHelper::R_J2000_body(BodyNames[index][1], ephemerisTime_),
+        SpiceHelper::position_J2000(BodyNames[index][0], ephemerisTime_));
+  }
+
+  double ephemerisTime_;
+  BodyId origin_;
+  Sophus::SE3d T_origin_J2000;
+  std::map<BodyId, PlanetState> bodies_;
+};
+
 int main() {
-  RunUnitTests();
+  // RunUnitTests();
+  const std::filesystem::path parentDirectory =
+      std::filesystem::path(__FILE__).parent_path();
 
   OpenGLWindow window("Solar System", 1980, 1080, true);
   PerPixelVAO vao;
   ReloadableShader shader(
-      std::filesystem::path(__FILE__).parent_path() / "shaders/sdf.vert",
-      std::filesystem::path(__FILE__).parent_path() /
-          "shaders/single_object.frag");
+      parentDirectory / "shaders/sdf.vert",
+      parentDirectory / "shaders/single_object.frag");
 
-  std::cout << SPICEHelper::T_J2000_body("EARTH", 750578468.1823622).matrix()
-            << std::endl;
-  ;
+  SolarSystemState systemState;
 
-  SDFObject sun{
-      .type = 1,
-      .T_self_world = {},
-      .parameters = {float(SPICEHelper::Radii("SUN").mean())},
-      .texture = ReloadableTexture(
-          std::filesystem::path(__FILE__).parent_path() / "assets/8k_sun.jpg"),
-      .isMatte = true};
-  SDFObject earth{
-      .type = 1,
-      .T_self_world = {},
-      .parameters = {float(SPICEHelper::Radii("EARTH").mean())},
-      .texture = ReloadableTexture(
-          std::filesystem::path(__FILE__).parent_path() / "assets/earth.jpg"),
-      .isMatte = false};
-  SDFObject moon{
-      .type = 1,
-      .T_self_world = {},
-      .parameters = {float(SPICEHelper::Radii("MOON").mean())},
-      .texture = ReloadableTexture(
-          std::filesystem::path(__FILE__).parent_path() / "assets/moon2.jpg"),
-      .isMatte = false};
+  std::map<SolarSystemState::BodyId, ReloadableTexture> systemTextures{
+      {SolarSystemState::SUN,
+       ReloadableTexture(parentDirectory / "assets/8k_sun.jpg")},
+      {SolarSystemState::EARTH,
+       ReloadableTexture(parentDirectory / "assets/earth.jpg")},
+      {SolarSystemState::MOON,
+       ReloadableTexture(parentDirectory / "assets/moon.jpg")},
+      {SolarSystemState::MARS, ReloadableTexture(173, 98, 66)}};
+  ImguiOpenGLRenderer gameTab("Game");
 
   float daysPerSecond = 0;
   float cameraFieldOfView = 2.0f / 180.0 * M_PI; // 120.0f / 180.0 * M_PI;
-  // Eigen::Vector3f lla{0, 0, 1e4};
   Eigen::Vector3f lla{47.608013 / 180 * M_PI, -122.335167 / 180 * M_PI, 3};
 
-  ImguiOpenGLRenderer gameTab("Game");
-
   bool hideEarth = false;
-  // earth, up, moon, sun
-  bool lookat[4] = {false, false, false, false};
-  glEnable(GL_DEPTH_TEST);
-
-  int ymdhms[6] = {2023, 10, 14, 16, 20, 0};
-
-  // SpiceDouble currentEt = 750578468.1823622; //
-  // SPICEHelper::EphemerisTimeNow();
-  SpiceDouble currentEt = SPICEHelper::EphemerisTimeFromDate(
-      ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]);
   bool isOrthographic = false;
+  bool reverseTime = false;
+  int ymdhms[6] = {2023, 10, 14, 14, 15, 0};
+
+  systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
+      ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
+
   auto previousTime = std::chrono::high_resolution_clock::now();
+  glEnable(GL_DEPTH_TEST);
   while (!window.shouldClose()) {
     window.beginNewFrame();
 
@@ -902,14 +931,24 @@ int main() {
 
     // ImGUI window creation
     ImGui::Begin("Controls");
+    const auto dateStr =
+        SpiceHelper::EphemerisTimeToDate(systemState.getTime());
+    ImGui::Text("Current Date: %s", dateStr.c_str());
     ImGui::Text("Time:");
-    ImGui::SliderFloat("Days per Second", &daysPerSecond, 0, 31);
-    ImGui::Text("Date (UTC):");
+    ImGui::SliderFloat(
+        "Days per Second",
+        &daysPerSecond,
+        0,
+        31,
+        "%.3f",
+        ImGuiSliderFlags_Logarithmic);
+    ImGui::Checkbox("Reverse time", &reverseTime);
+    ImGui::Text("Modify Date (UTC):");
     ImGui::InputInt3("Year/Month/Day", ymdhms);
     ImGui::InputInt3("Hour/Minute/Second", ymdhms + 3);
-    if (ImGui::Button("Set Date")) {
-      currentEt = SPICEHelper::EphemerisTimeFromDate(
-          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]);
+    if (ImGui::Button("Apply")) {
+      systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
+          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
     }
 
     // Text that appears in the window
@@ -919,8 +958,6 @@ int main() {
         "Origins", &currentOrigin, originOptions, IM_ARRAYSIZE(originOptions));
     ImGui::SliderAngle("Latitude", &lla.x(), -90, 90);
     ImGui::SliderAngle("Longitude", &lla.y(), -180, 180);
-    // ImGui::SliderAngle("Latitude", &lla.x(), -90.0f, 90.0f);
-    // ImGui::SliderAngle("Longitude", &lla.y(), -180.0f, 180.0f);
     if (std::string(lookatOptions[currentLook]) ==
         std::string("EarthTopDown")) {
       ImGui::SliderFloat("Altitude (km)", &lla.z(), 1.0f, 1e6f);
@@ -931,7 +968,13 @@ int main() {
     }
     ImGui::Text("Camera Settings:");
     ImGui::Checkbox("Orthographic", &isOrthographic);
-    ImGui::SliderAngle("Vertical FoV", &cameraFieldOfView, 0, 120.0f);
+    ImGui::SliderAngle(
+        "Vertical FoV",
+        &cameraFieldOfView,
+        0,
+        120.0f,
+        "%.0f deg",
+        ImGuiSliderFlags_Logarithmic);
     ImGui::Combo(
         "Look At", &currentLook, lookatOptions, IM_ARRAYSIZE(lookatOptions));
     ImGui::Checkbox("Hide Earth", &hideEarth);
@@ -939,46 +982,35 @@ int main() {
 
     // Calculate current time
     const auto currentTime = std::chrono::high_resolution_clock::now();
-    const auto dtSecs = (currentTime - previousTime).count() / 1e9;
+    auto dtSecs = (currentTime - previousTime).count() / 1e9;
+    if (reverseTime) {
+      dtSecs *= -1;
+    }
     previousTime = currentTime;
 
-    currentEt += dtSecs * 60 * 60 * 24 * daysPerSecond;
-    Sophus::SE3d T_J2000_earth = SPICEHelper::T_J2000_body("EARTH", currentEt);
-    Sophus::SE3d T_J2000_sun = SPICEHelper::T_J2000_body("SUN", currentEt);
-    Sophus::SE3d T_J2000_moon = SPICEHelper::T_J2000_body("MOON", currentEt);
-
-    earth.T_self_world = T_J2000_earth.inverse();
-    sun.T_self_world = T_J2000_sun.inverse();
-    moon.T_self_world = T_J2000_moon.inverse();
-
-    const std::string origin = originOptions[currentOrigin];
-    Sophus::SE3d T_world_newWorld;
-    if (origin == "Earth") {
-      T_world_newWorld = earth.T_self_world.inverse();
-    } else if (origin == "Moon") {
-      T_world_newWorld = moon.T_self_world.inverse();
-    } else if (origin == "Sun") {
-      T_world_newWorld = sun.T_self_world.inverse();
-    }
-    earth.T_self_world *= T_world_newWorld;
-    sun.T_self_world *= T_world_newWorld;
-    moon.T_self_world *= T_world_newWorld;
+    systemState.setTime(
+        systemState.getTime() + dtSecs * 60 * 60 * 24 * daysPerSecond);
 
     Sophus::SE3d T_earth_camera;
 
     const std::string chosenLook = lookatOptions[currentLook];
-    const auto R = earth.parameters.at(0);
+    const auto R = systemState.bodies().at(SolarSystemState::EARTH).radius;
     const auto lat = lla.x();
     const auto lon = lla.y();
     const auto alt = lla.z() / 1e3;
-    // Eigen::Vector3d camera_earth = {
-    //     (R + alt) * std::cos(lat) * std::cos(lon),
-    //     (R + alt) * std::cos(lat) * std::sin(lon),
-    //     (R + alt) * std::sin(lat)};
+
     Eigen::Vector3d camera_earth;
     latrec_c(R, lon, lat, camera_earth.data());
-    // reclat_c();
     camera_earth += camera_earth.normalized() * alt;
+
+    const std::string origin = originOptions[currentOrigin];
+    if (origin == "Earth") {
+      systemState.setOrigin(SolarSystemState::EARTH);
+    } else if (origin == "Moon") {
+      systemState.setOrigin(SolarSystemState::MOON);
+    } else if (origin == "Sun") {
+      systemState.setOrigin(SolarSystemState::SUN);
+    }
 
     if (chosenLook == "Earth") {
       T_earth_camera = LookAt(
@@ -990,79 +1022,36 @@ int main() {
           -camera_earth.normalized());
     } else if (chosenLook == "Moon") {
       const Sophus::SE3d T_earth_moon =
-          earth.T_self_world * moon.T_self_world.inverse();
+          systemState.T_origin_body(SolarSystemState::EARTH).inverse() *
+          systemState.T_origin_body(SolarSystemState::MOON);
       T_earth_camera = LookAt(
           camera_earth,
           T_earth_moon.translation(),
           T_earth_moon.so3() * Eigen::Vector3d::UnitZ());
     } else if (chosenLook == "Sun") {
       const Sophus::SE3d T_earth_sun =
-          earth.T_self_world * sun.T_self_world.inverse();
+          systemState.T_origin_body(SolarSystemState::EARTH).inverse() *
+          systemState.T_origin_body(SolarSystemState::SUN);
       T_earth_camera = LookAt(
           camera_earth,
           T_earth_sun.translation(),
           T_earth_sun.so3() * Eigen::Vector3d::UnitZ());
     } else if (chosenLook == "EarthTopDown") {
       T_earth_camera = LookAt(
-          Eigen::Vector3d::UnitZ() * (earth.parameters.at(0) + alt),
+          Eigen::Vector3d::UnitZ() *
+              (systemState.radius(SolarSystemState::EARTH) + alt),
           Eigen::Vector3d::Zero(),
           Eigen::Vector3d::UnitY());
     } else if (chosenLook == "SunTopDown") {
       const Sophus::SE3d T_earth_sun =
-          earth.T_self_world * sun.T_self_world.inverse();
+          systemState.T_origin_body(SolarSystemState::EARTH).inverse() *
+          systemState.T_origin_body(SolarSystemState::SUN);
 
       T_earth_camera = LookAt(
           T_earth_sun * Eigen::Vector3d::UnitZ() * (alt),
           T_earth_sun * Eigen::Vector3d::Zero(),
           Eigen::Vector3d::UnitY());
     }
-
-    // Calculate viewing angle between sun and moon from camera
-    // {
-    //   Eigen::Vector3d ab = (T_earth_camera.inverse() * earth.T_self_world *
-    //                         sun.T_self_world.inverse())
-    //                            .translation();
-    //   Eigen::Vector3d ac = (T_earth_camera.inverse() * earth.T_self_world *
-    //                         moon.T_self_world.inverse())
-    //                            .translation();
-    //   // std::string d = SPICEHelper::EphemerisTimeToDate(currentEt);
-    //   const double angle =
-    //       180 / M_PI * std::acos((ab.dot(ac)) / (ab.norm() * ac.norm()));
-    //   if (angle < 2)
-    //     fmt::println("{}: {:.2f}", currentEt, angle);
-    // }
-
-    // Show line intersection of Sun-Moon line onto earth
-    // std::optional<SDFObject> object;
-    // {
-    //   const Eigen::Vector3d center =
-    //   sun.T_self_world.inverse().translation(); const Eigen::Vector3d
-    //   direction =
-    //       (moon.T_self_world.inverse().translation() -
-    //       center).normalized();
-    //   if (const auto distance = intersect(
-    //           center,
-    //           direction,
-    //           earth.T_self_world.inverse().translation(),
-    //           earth.parameters.front())) {
-    //     static int xx = 0;
-    //     fmt::println("{}", xx++);
-    //     fmt::println("Found an eclipse!");
-    //     const Eigen::Vector3d hit = center + direction * distance.value();
-    //     object = SDFObject{
-    //         .isMatte = true,
-    //         .parameters = {earth.parameters.front() / 10},
-    //         .texture = ReloadableTexture(255, 0, 0),
-    //         .type = 1,
-    //         .T_self_world = Sophus::SE3d(Sophus::SO3d(), hit).inverse()};
-    //     fmt::println(
-    //         "radius: {}, earth distance: {}",
-    //         object->parameters.front(),
-    //         (earth.T_self_world * object->T_self_world.inverse())
-    //             .translation()
-    //             .norm());
-    //   }
-    // }
 
     gameTab.bind();
     gameTab.clear();
@@ -1074,22 +1063,44 @@ int main() {
     K << fy, 0, width / 2.0, 0, fy, height / 2.0, 0, 0, 1;
 
     Camera camera{
-        .T_world_self = earth.T_self_world.inverse() * T_earth_camera,
+        .T_world_self =
+            systemState.T_origin_body(SolarSystemState::EARTH) * T_earth_camera,
         .K = K,
         .resolution = {width, height},
         .orthographic = isOrthographic};
 
-    Light lighting{.T_self_world = sun.T_self_world};
+    Light lighting{
+        .T_self_world =
+            systemState.T_origin_body(SolarSystemState::SUN).inverse()};
+
+    const auto createObject = [&](SolarSystemState::BodyId id,
+                                  bool isMatte = false) {
+      return SDFObject{
+          .isMatte = isMatte,
+          .parameters = {float(systemState.radius(id))},
+          .T_self_world = systemState.T_origin_body(id).inverse(),
+          .texture = systemTextures.at(id).id(),
+          .type = 1};
+    };
 
     const auto shaderProgram = shader.id();
     glUseProgram(shaderProgram);
     glBindVertexArray(vao.id());
-    SetObjectUniforms(shaderProgram, camera, lighting, sun);
+    SetObjectUniforms(
+        shaderProgram,
+        camera,
+        lighting,
+        createObject(SolarSystemState::SUN, true));
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    SetObjectUniforms(shaderProgram, camera, lighting, moon);
+    SetObjectUniforms(
+        shaderProgram, camera, lighting, createObject(SolarSystemState::MOON));
     glDrawArrays(GL_TRIANGLES, 0, 6);
     if (!hideEarth) {
-      SetObjectUniforms(shaderProgram, camera, lighting, earth);
+      SetObjectUniforms(
+          shaderProgram,
+          camera,
+          lighting,
+          createObject(SolarSystemState::EARTH));
       glDrawArrays(GL_TRIANGLES, 0, 6);
     }
     // if (object) {
@@ -1100,6 +1111,11 @@ int main() {
     gameTab.unbind();
 
     window.finishFrame();
+  }
+
+  // Clean up textures to be nice
+  for (auto& [_, texture] : systemTextures) {
+    texture.release();
   }
 
   return 0;

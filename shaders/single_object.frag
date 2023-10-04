@@ -59,16 +59,15 @@ SDInfo signedDistance(vec3 position_world) {
         float radius = shapeParameters[0].x;
         float height = shapeParameters[0].y;
         vec3 position_shape = vec4(position_world, 1.0).xyz;
-        info.dist = max(length(position_shape.xz) - radius, abs(position_shape.y) - height);
+        info.dist = max(length(position_shape.xy) - radius, abs(position_shape.z) - height);
 
         // UV calculation
-        
-
-        // vec2 position_dir_xz = normalize(position_shape.xy);
-        // info.uv = vec2(
-        //     (atan(position_dir_xz.y, position_dir_xz.x) + PI) / (2 * PI),
-        //     length(position_shape.xz) / radius
-        // );
+    
+        vec2 position_dir_xy = normalize(position_shape.xy);
+        info.uv = vec2(
+            1 - (atan(position_dir_xy.x, position_dir_xy.y) + PI) / (2 * PI),
+            1 - length(position_shape.xy) / radius
+        );
     } else {
         info.dist = 0;
         info.uv = vec2(0, 0);
@@ -144,7 +143,7 @@ void main() {
 
     if (result.hit) {
         vec4 textureColor = texture(objectTexture, result.uv);
-        vec3 light_direction = normalize(light_shape);
+        vec3 light_direction = normalize(light_shape - result.position);
         float intensity = max(0, dot(light_direction, result.normal));
 
         // If it's matte, then no lighting affects it. It's always bright
@@ -154,6 +153,9 @@ void main() {
 
         FragColor = textureColor * max(0, intensity);
 
+        // if (result.position.z > 1e-3) {
+        //     FragColor = vec4(1, 0, 0, 1);
+        // }
 
         // FragColor = vec4(light_direction, 1);
         gl_FragDepth = length(t_shape_camera - result.position) / MaximumDistance;

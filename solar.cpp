@@ -520,6 +520,9 @@ Sophus::SE3d LookAt(
   const Eigen::Vector3d forward = (target_world - position_world).normalized();
   const Eigen::Vector3d right = (upHint.cross(forward)).normalized();
   const Eigen::Vector3d up = (forward.cross(right)).normalized();
+  if (right.norm() < 1e-6 || up.norm() < 1e-6) {
+    return Sophus::SE3d(Sophus::SO3d(), position_world);
+  }
   Eigen::Matrix3d R;
   R.col(0) = -right;
   R.col(1) = -up;
@@ -613,6 +616,12 @@ class OpenGLWindow {
 
     glfwSwapBuffers(window_);
     glfwPollEvents();
+  }
+
+  std::pair<int, int> getSize() const {
+    std::pair<int, int> wh;
+    glfwGetFramebufferSize(window_, &wh.first, &wh.second);
+    return wh;
   }
 
  private:
@@ -817,10 +826,10 @@ void RunUnitTests() {
 }
 } // namespace
 
+enum BodyId { J2000 = -1, EARTH, MOON, MARS, SUN };
+
 class SolarSystemState {
  public:
-  enum BodyId { J2000 = -1, EARTH, MOON, MARS, SUN };
-
   struct PlanetState {
     BodyId id;
     double radius;
@@ -844,6 +853,11 @@ class SolarSystemState {
   double getTime() const { return ephemerisTime_; }
 
   void setOrigin(BodyId body) {
+    if (body == J2000) {
+      origin_ = J2000;
+      T_origin_J2000 = Sophus::SE3d();
+      return;
+    }
     origin_ = body;
     T_origin_J2000 = T_J2000_body(body).inverse();
   }
@@ -863,6 +877,29 @@ class SolarSystemState {
     return position_body + position_body.normalized() * altitude;
   }
 
+  std::pair<Eigen::Vector3d, Eigen::Vector3d> linearVelocityAccelerationMeters(
+      BodyId id,
+      double latitude,
+      double longitude,
+      double altitude,
+      double dt = 1) const {
+    const Eigen::Vector3d lla_body =
+        position_body(id, latitude, longitude, altitude);
+    const Eigen::Vector3d p0 =
+        T_J2000_body(id, ephemerisTime_).so3() * lla_body;
+    const Eigen::Vector3d p1 =
+        T_J2000_body(id, ephemerisTime_ + dt).so3() * lla_body;
+    const Eigen::Vector3d p2 =
+        T_J2000_body(id, ephemerisTime_ + dt + dt).so3() * lla_body;
+
+    const Eigen::Vector3d v0 = ((p1 - p0) / dt) * 1e6;
+    const Eigen::Vector3d v1 = ((p2 - p1) / dt) * 1e6;
+
+    const Eigen::Vector3d a = (v1 - v0) / dt;
+
+    return {(v0 + v1) / 2.0, a};
+  }
+
   const std::map<BodyId, PlanetState>& bodies() { return bodies_; }
 
  private:
@@ -875,10 +912,14 @@ class SolarSystemState {
   };
 
   Sophus::SE3d T_J2000_body(BodyId id) const {
+    return T_J2000_body(id, ephemerisTime_);
+  }
+
+  Sophus::SE3d T_J2000_body(BodyId id, double et) const {
     const auto index = static_cast<int>(id);
     return Sophus::SE3d(
-        SpiceHelper::R_J2000_body(BodyNames[index][1], ephemerisTime_),
-        SpiceHelper::position_J2000(BodyNames[index][0], ephemerisTime_));
+        SpiceHelper::R_J2000_body(BodyNames[index][1], et),
+        SpiceHelper::position_J2000(BodyNames[index][0], et));
   }
 
   double ephemerisTime_;
@@ -886,6 +927,8 @@ class SolarSystemState {
   Sophus::SE3d T_origin_J2000;
   std::map<BodyId, PlanetState> bodies_;
 };
+
+class GravitySolarSystemSim {};
 
 int main() {
   // RunUnitTests();
@@ -900,34 +943,37 @@ int main() {
 
   SolarSystemState systemState;
 
-  std::map<SolarSystemState::BodyId, ReloadableTexture> systemTextures{
-      {SolarSystemState::SUN,
-       ReloadableTexture(parentDirectory / "assets/8k_sun.jpg")},
-      {SolarSystemState::EARTH,
-       ReloadableTexture(parentDirectory / "assets/earth.jpg")},
-      {SolarSystemState::MOON,
-       ReloadableTexture(parentDirectory / "assets/moon.jpg")},
-      {SolarSystemState::MARS,
-       ReloadableTexture(parentDirectory / "assets/mars.jpg")}};
-  ImguiOpenGLRenderer gameTab("Game");
+  std::map<BodyId, ReloadableTexture> systemTextures{
+      {BodyId::SUN, ReloadableTexture(parentDirectory / "assets/8k_sun.jpg")},
+      {BodyId::EARTH, ReloadableTexture(parentDirectory / "assets/earth.jpg")},
+      {BodyId::MOON, ReloadableTexture(parentDirectory / "assets/moon.jpg")},
+      {BodyId::MARS, ReloadableTexture(parentDirectory / "assets/mars.jpg")}};
+  ImguiOpenGLRenderer globeEarth("Globe Earth");
+  ImguiOpenGLRenderer flatEarth("Flat Earth");
 
-  float daysPerSecond = 0;
-  float cameraFieldOfViewDegs = 120.0; // 120.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{0 / 180.0 * M_PI, 87.0 / 180 * M_PI, .1};
+  float daysPerSecond = 0; //.2;
+  float cameraFieldOfViewDegs = 100.0; // 120.0f / 180.0 * M_PI;
+  Eigen::Vector3f lla{30 / 180.0 * M_PI, -97.0 / 180 * M_PI, 1e-3};
+  Eigen::Vector2f pitchYaw{16.0 / 180 * M_PI, -90. / 180.0 * M_PI};
 
   bool hideFromBody = false;
   bool isOrthographic = false;
   bool reverseTime = false;
-  bool stepMode = true;
-  int ymdhms[6] = {2004, 01, 1, 5, 00, 00};
+  bool stepMode = false;
+  int ymdhms[6] = {2023, 3, 19, 21, 00, 00};
   int selectedCameraMode = 0;
   int selectedFromBody = 0;
   int selectedToBody = 0;
-
-  Eigen::Vector2f pitchYaw{90.0 / 180 * M_PI, -90. / 180.0 * M_PI};
+  int flatEarthPeriods = 1;
+  int selectedOriginIdx = 0;
+  // systemState.setOrigin(BodyId::SUN);
 
   systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
       ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
+
+  float flatEarthSunHeightKm = 3000;
+  float flatEarthHeightVaryKm = 0;
+  float flatEarthSunSizeKm = 50;
 
   auto previousTime = std::chrono::high_resolution_clock::now();
   glEnable(GL_DEPTH_TEST);
@@ -952,9 +998,9 @@ int main() {
     ImGui::DragFloat(
         "Days per Second",
         &daysPerSecond,
-        1.0,
+        0.01,
         0,
-        31,
+        2,
         "%.3f",
         ImGuiSliderFlags_Logarithmic);
     ImGui::Checkbox("Reverse time", &reverseTime);
@@ -962,7 +1008,7 @@ int main() {
     if (stepMode) {
       if (ImGui::Button("Step")) {
         systemState.setTime(systemState.getTime() + dtSecs);
-      } else if (ImGui::Button("Step Day")) {
+      } else if (ImGui::Button("Step Day") || stepMode) {
         systemState.setTime(
             systemState.getTime() + 60 * 60 * 24 * (reverseTime ? -1 : 1));
       }
@@ -994,15 +1040,14 @@ int main() {
     const char* cameraModes[] = {"BodyToBody", "TopDown"};
     ImGui::Combo("Mode", &selectedCameraMode, cameraModes, 2);
     const std::string cameraMode = cameraModes[selectedCameraMode];
-    std::set<SolarSystemState::BodyId> hiddenBodies;
+    std::set<BodyId> hiddenBodies;
+    static const std::map<std::string, BodyId> bodyFromString{
+        {"Earth", BodyId::EARTH},
+        {"Sun", BodyId::SUN},
+        {"Moon", BodyId::MOON},
+        {"Mars", BodyId::MARS}};
+    static const char* bodies[] = {"North", "Earth", "Sun", "Moon", "Mars"};
     if (cameraMode == "BodyToBody") {
-      static const std::map<std::string, SolarSystemState::BodyId>
-          bodyFromString{
-              {"Earth", SolarSystemState::EARTH},
-              {"Sun", SolarSystemState::SUN},
-              {"Moon", SolarSystemState::MOON},
-              {"Mars", SolarSystemState::MARS}};
-      const char* bodies[] = {"North", "Earth", "Sun", "Moon", "Mars"};
       ImGui::Text("Bodies:");
       ImGui::Combo("From", &selectedFromBody, bodies + 1, 4);
       ImGui::Combo("To", &selectedToBody, bodies, 5);
@@ -1014,7 +1059,7 @@ int main() {
       ImGui::Text("Position:");
       ImGui::SliderAngle("Latitude", &lla.x(), -90, 90);
       ImGui::SliderAngle("Longitude", &lla.y(), -180, 180);
-      ImGui::SliderFloat("Altitude (km)", &lla.z(), 1, 1e4);
+      ImGui::DragFloat("Altitude (km)", &lla.z(), 1.0, 1e-3, 1e4);
       ImGui::Text("Viewing Angle:");
       ImGui::SliderAngle("Pitch", &pitchYaw.x(), -90, 90);
       ImGui::SliderAngle("Yaw", &pitchYaw.y(), -180, 180);
@@ -1060,48 +1105,65 @@ int main() {
           if (c == ':')
             c = '-';
         modifiedDateStr = fmt::format("{}.png", modifiedDateStr);
-        const auto [widthF, heightF] = gameTab.size();
-        const GLuint textureID = gameTab.texture();
-        const int width = int(widthF);
-        const int height = int(heightF);
+        const auto [width, height] = window.getSize();
+        const GLuint textureID = globeEarth.texture();
 
         // Create a buffer to hold the pixel data.
         GLubyte* pixels =
-            new GLubyte[width * height * 4]; // Assuming 4 channels (RGBA)
-
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        glBindTexture(GL_TEXTURE_2D, 0);
+            new GLubyte[width * height * 3]; // Assuming 3 channels (RGB)
+        glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels);
         const std::filesystem::path filepath = saveDirectory / modifiedDateStr;
-        stbi_write_png(filepath.c_str(), width, height, 4, pixels, width * 4);
+        stbi_write_png(filepath.c_str(), width, height, 3, pixels, width * 3);
       }
     }
+
+    ImGui::Separator();
+    ImGui::Text("Flat Earth Parameters:");
+    ImGui::SliderFloat("Sun height (km)", &flatEarthSunHeightKm, 1e-3, 10000);
+    ImGui::SliderFloat("Sun size (km)", &flatEarthSunSizeKm, 1e-3, 100);
+    ImGui::SliderFloat(
+        "Sun height variation (km)", &flatEarthHeightVaryKm, 0, 10000);
+    ImGui::SliderInt("Sun height periods", &flatEarthPeriods, 1, 10);
+
+    ImGui::Separator();
+    ImGui::Text("Statistics:");
+    // ImGui::Combo("Origin:", &selectedOriginIdx, bodies + 1, 4);
+    // systemState.setOrigin(bodyFromString.at(bodies[selectedOriginIdx + 1]));
+    const auto [velocity, acceleration] =
+        systemState.linearVelocityAccelerationMeters(
+            bodyFromString.at(bodies[selectedToBody + 1]),
+            lla.x(),
+            lla.y(),
+            lla.z() / 1e3,
+            60);
+    ImGui::Text("Camera Velocity on Earth: %.1f m/s", velocity.norm());
+    ImGui::Text(
+        "Camera Acceleration on Earth: %.4f m/s^2", acceleration.norm());
+    ImGui::Text("%.2f%% of Gravity", acceleration.norm() / 9.81 * 100);
 
     ImGui::End();
     previousTime = currentTime;
 
-    gameTab.bind();
-    gameTab.clear();
-    const ImVec2 size = gameTab.size();
-    const auto [width, height] = size;
+    globeEarth.bind();
+    globeEarth.clear();
+    const ImVec2 flatSize = globeEarth.size();
+    const auto [flatWidth, flatHeight] = flatSize;
 
-    const auto fx =
-        (width / 2.0) / tan(cameraFieldOfViewDegs / 180 * M_PI / 2.0);
+    const auto flatFx =
+        (flatWidth / 2.0) / tan(cameraFieldOfViewDegs / 180 * M_PI / 2.0);
     Eigen::Matrix3f K;
-    K << fx, 0, width / 2.0, 0, fx, height / 2.0, 0, 0, 1;
+    K << flatFx, 0, flatWidth / 2.0, 0, flatFx, flatHeight / 2.0, 0, 0, 1;
 
     Camera camera{
         .T_world_self = T_origin_camera,
         .K = K,
-        .resolution = {width, height},
+        .resolution = {flatWidth, flatHeight},
         .orthographic = isOrthographic};
 
     Light lighting{
-        .T_self_world =
-            systemState.T_origin_body(SolarSystemState::SUN).inverse()};
+        .T_self_world = systemState.T_origin_body(BodyId::SUN).inverse()};
 
-    const auto createObject = [&](SolarSystemState::BodyId id,
-                                  bool isMatte = false) {
+    const auto createObject = [&](BodyId id, bool isMatte = false) {
       return SDFObject{
           .isMatte = isMatte,
           .parameters = {float(systemState.radius(id))},
@@ -1110,8 +1172,7 @@ int main() {
           .type = 1};
     };
 
-    const auto shaderProgram = shader.id();
-    glUseProgram(shaderProgram);
+    glUseProgram(shader.id());
     glBindVertexArray(vao.id());
     for (const auto& [bodyId, _] : systemState.bodies()) {
       if (hiddenBodies.count(bodyId)) {
@@ -1119,13 +1180,101 @@ int main() {
       }
 
       SetObjectUniforms(
-          shaderProgram,
+          shader.id(),
           camera,
           lighting,
-          createObject(bodyId, bodyId == SolarSystemState::SUN));
+          createObject(bodyId, bodyId == BodyId::SUN));
       glDrawArrays(GL_TRIANGLES, 0, 6);
     }
-    gameTab.unbind();
+    globeEarth.unbind();
+
+    flatEarth.bind();
+    flatEarth.clear();
+    const auto shaderProgram = shader.id();
+    glUseProgram(shaderProgram);
+    glBindVertexArray(vao.id());
+
+    const ImVec2 size = flatEarth.size();
+    const auto [width, height] = size;
+
+    const auto fx =
+        (width / 2.0) / tan(cameraFieldOfViewDegs / 180 * M_PI / 2.0);
+    Eigen::Matrix3f flatK;
+    flatK << fx, 0, width / 2.0, 0, fx, height / 2.0, 0, 0, 1;
+
+    SDFObject flatEarthObj{
+        .type = 2,
+        .T_self_world = Sophus::SE3d(),
+        .parameters = {float(systemState.radius(BodyId::EARTH) * 2), .1f},
+        .texture = systemTextures.at(BodyId::EARTH).id(),
+        .isMatte = false,
+    };
+
+    const Sophus::SE3d T_world_surface(
+        Sophus::SO3d(),
+        Eigen::Vector3d::UnitZ() * flatEarthObj.parameters.at(1));
+
+    const Sophus::SO3d R_mount_camera =
+        Sophus::SO3d::rotY(pitchYaw.y()) * Sophus::SO3d::rotX(pitchYaw.x());
+
+    const double distanceFromCenter =
+        ((-lla.x() + M_PI / 2) / M_PI) * flatEarthObj.parameters.at(0);
+    Eigen::Vector3d mountPosition_surface;
+    mountPosition_surface.x() =
+        distanceFromCenter * std::cos(lla.y() + M_PI / 2);
+    mountPosition_surface.y() =
+        distanceFromCenter * std::sin(lla.y() + M_PI / 2);
+    mountPosition_surface.z() = mountPosition_surface.z() = lla.z() / 1e3;
+    Sophus::SE3d T_surface_mount = LookAt(
+        mountPosition_surface,
+        Eigen::Vector3d::UnitZ() * mountPosition_surface.z(),
+        Eigen::Vector3d::UnitZ());
+
+    Camera flatCamera{
+        .T_world_self = T_world_surface * T_surface_mount *
+            Sophus::SE3d(R_mount_camera, Eigen::Vector3d::Zero()),
+        .resolution = {width, height},
+        .K = flatK,
+        .orthographic = isOrthographic};
+
+    const double angle = M_PI * .4 +
+        -(std::fmod(systemState.getTime(), 60 * 60 * 24) / (60 * 60 * 24)) *
+            (2 * M_PI);
+    const double percentYear =
+        std::fmod(systemState.getTime(), 60 * 60 * 24 * 365.25) /
+        (60 * 60 * 24 * 365.25);
+    const double sunLatitude =
+        std::sin(percentYear * 2 * M_PI) * 23.5 / 180.0 * M_PI;
+    const double sunDistanceFromCenter =
+        ((-sunLatitude + M_PI / 2) / M_PI) * flatEarthObj.parameters.at(0);
+    Eigen::Vector3d sunPosition_surface;
+    sunPosition_surface.x() = sunDistanceFromCenter * std::cos(angle);
+    sunPosition_surface.y() = sunDistanceFromCenter * std::sin(angle);
+    sunPosition_surface.z() = flatEarthSunHeightKm / 1e3 +
+        (0.5 * std::sin(percentYear * 2 * M_PI * flatEarthPeriods) *
+         flatEarthHeightVaryKm / 1e3);
+
+    const double spinAngle =
+        (std::fmod(systemState.getTime(), 60 * 60 * 24) / (60 * 60 * 24 * 27)) *
+        (2 * M_PI);
+
+    Sophus::SE3d T_surface_sun(
+        Sophus::SO3d::rotZ(spinAngle), sunPosition_surface);
+
+    SDFObject sunObject{
+        .type = 1,
+        .T_self_world = (T_world_surface * T_surface_sun).inverse(),
+        .parameters = {float(flatEarthSunSizeKm / 1e3)},
+        .texture = systemTextures.at(BodyId::SUN).id(),
+        .isMatte = true};
+
+    Light flatLighting{.T_self_world = sunObject.T_self_world};
+    SetObjectUniforms(shaderProgram, flatCamera, flatLighting, flatEarthObj);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    SetObjectUniforms(shaderProgram, flatCamera, flatLighting, sunObject);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    flatEarth.unbind();
 
     window.finishFrame();
   }

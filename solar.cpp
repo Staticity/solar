@@ -1178,18 +1178,21 @@ int main() {
     Sophus::SE3d T_origin_camera;
 
     ImGui::Begin("Scene Controls:");
+    const auto dateStr =
+        SpiceHelper::EphemerisTimeToDate(systemState.getTime());
+    ImGui::Text("Current Date: %s", dateStr.c_str());
+
+    ImGui::Spacing();
     ImGui::Checkbox("Use Gravity Simulation", &useSimulation);
     if (useSimulation) {
       systemState.useSimulation();
       ImGui::Text(
           "Earth Error from Sun (km): %.2f",
-          systemState.positionalErrorFromSun(BodyId::EARTH));
+          systemState.positionalErrorFromSun(BodyId::EARTH) * 1e3);
     } else {
       systemState.useSpice();
     }
-    const auto dateStr =
-        SpiceHelper::EphemerisTimeToDate(systemState.getTime());
-    ImGui::Text("Current Date: %s", dateStr.c_str());
+
     ImGui::Spacing();
     ImGui::Text("Time Controls:");
     ImGui::DragFloat(
@@ -1320,7 +1323,7 @@ int main() {
     ImGui::SliderFloat("Sun size (km)", &flatEarthSunSizeKm, 1e-3, 100);
     ImGui::SliderFloat(
         "Sun height variation (km)", &flatEarthHeightVaryKm, 0, 10000);
-    ImGui::SliderInt("Sun height periods", &flatEarthPeriods, 1, 10);
+    ImGui::SliderInt("Sun height periods", &flatEarthPeriods, 0, 10);
 
     ImGui::Separator();
     ImGui::Text("Statistics:");
@@ -1403,7 +1406,8 @@ int main() {
     SDFObject flatEarthObj{
         .type = 2,
         .T_self_world = Sophus::SE3d(),
-        .parameters = {float(systemState.radius(BodyId::EARTH) * 2), .1f},
+        .parameters =
+            {float(systemState.radius(BodyId::EARTH) * M_PI / 2), .1f},
         .texture = systemTextures.at(BodyId::EARTH).id(),
         .isMatte = false,
     };

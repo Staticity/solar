@@ -465,6 +465,8 @@ const SpiceKernelPackage SpiceHelper::Kernels = {{
     std::filesystem::path(__FILE__).parent_path() / "cspice/kernels/de440.bsp",
     std::filesystem::path(__FILE__).parent_path() /
         "cspice/kernels/pck00011.tpc",
+    std::filesystem::path(__FILE__).parent_path() /
+        "cspice/kernels/gm_de440.tpc",
 }};
 
 class PerPixelVAO {
@@ -866,6 +868,15 @@ class SolarSystemState {
 
   double radius(BodyId id) const { return bodies_.at(id).radius; }
 
+  double gMass(BodyId id) const {
+    SpiceDouble gm;
+    SpiceInt n;
+
+    const auto index = static_cast<int>(id);
+    bodvrd_c(BodyNames[index][0], "GM", 1, &n, &gm);
+    return gm;
+  }
+
   Sophus::SE3d T_origin_body(BodyId id) const {
     return T_origin_J2000 * T_J2000_body(id);
   }
@@ -877,12 +888,13 @@ class SolarSystemState {
     return position_body + position_body.normalized() * altitude;
   }
 
-  std::pair<Eigen::Vector3d, Eigen::Vector3d> linearVelocityAccelerationMeters(
+  std::pair<Eigen::Vector3d, Eigen::Vector3d> linearVelocityAcceleration(
       BodyId id,
       double latitude,
       double longitude,
       double altitude,
-      double dt = 1) const {
+      double dt = 1,
+      double scale = 1) const {
     const Eigen::Vector3d lla_body =
         position_body(id, latitude, longitude, altitude);
     const Eigen::Vector3d p0 =
@@ -892,15 +904,15 @@ class SolarSystemState {
     const Eigen::Vector3d p2 =
         T_J2000_body(id, ephemerisTime_ + dt + dt).so3() * lla_body;
 
-    const Eigen::Vector3d v0 = ((p1 - p0) / dt) * 1e6;
-    const Eigen::Vector3d v1 = ((p2 - p1) / dt) * 1e6;
+    const Eigen::Vector3d v0 = ((p1 - p0) / dt) * scale;
+    const Eigen::Vector3d v1 = ((p2 - p1) / dt) * scale;
 
     const Eigen::Vector3d a = (v1 - v0) / dt;
 
     return {(v0 + v1) / 2.0, a};
   }
 
-  const std::map<BodyId, PlanetState>& bodies() { return bodies_; }
+  const std::map<BodyId, PlanetState>& bodies() const { return bodies_; }
 
  private:
   // Stored as: {position_name, rotation_name, radii_name}
@@ -928,7 +940,182 @@ class SolarSystemState {
   std::map<BodyId, PlanetState> bodies_;
 };
 
-class GravitySolarSystemSim {};
+class GravitySolarSystemSim {
+ public:
+  GravitySolarSystemSim(const SolarSystemState& state) : state_(state) {}
+
+  void initialize() {
+    bodyStates_.clear();
+    for (const auto& [body, _] : state_.bodies()) {
+      const auto [velocity, acceleration] =
+          state_.linearVelocityAcceleration(body, 0, 0, 0);
+      bodyStates_[body] = {
+          .id = body,
+          .T_origin_self = state_.T_origin_body(body),
+          .gMass = state_.gMass(body),
+          .velocity = velocity,
+          .acceleration = acceleration};
+    }
+    currentTimeSecs_ = state_.getTime();
+    origin_ = state_.origin();
+  }
+
+  void update() {
+    const double dt = state_.getTime() - currentTimeSecs_;
+    if (dt == 0) {
+      return;
+    }
+
+    // Update to time
+    setAccelerations();
+    for (auto& [_, body] : bodyStates_) {
+      // Simply retrieve orientation from the state
+      body.T_origin_self.so3() = state_.T_origin_body(body.id).so3();
+
+      // Perform Euler integration forward
+      body.T_origin_self.translation() += body.velocity * dt;
+      body.velocity += body.acceleration * dt;
+    }
+
+    currentTimeSecs_ = state_.getTime();
+  }
+
+  BodyId origin() const { return origin_; }
+
+  double getTime() const { return currentTimeSecs_; }
+
+  const Sophus::SE3d& T_origin_body(BodyId id) const {
+    return bodyStates_.at(id).T_origin_self;
+  }
+
+  void setOrigin(BodyId id) {
+    const Sophus::SE3d T_new_oldOrigin = state_.T_origin_body(id).inverse();
+    for (auto& [_, body] : bodyStates_) {
+      body.T_origin_self = T_new_oldOrigin * body.T_origin_self;
+    }
+  }
+
+ private:
+  void setAccelerations() {
+    for (auto& [_, a] : bodyStates_) {
+      Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
+      for (const auto& [__, b] : bodyStates_) {
+        if (a.id == b.id) {
+          continue;
+        }
+        const Eigen::Vector3d rv =
+            (b.T_origin_self.translation() - a.T_origin_self.translation()) *
+            1e3;
+        const double r = rv.norm();
+        acceleration += b.gMass / (r * r * r) * rv;
+      }
+      a.acceleration = acceleration / 1e3;
+      fmt::println(
+          "Body: {} with acceleration: {} {} {}",
+          int(_),
+          acceleration(0),
+          acceleration(1),
+          acceleration(2));
+    }
+  }
+
+  const std::vector<BodyId> bodies = {SUN, MOON, EARTH, MARS};
+
+  struct BodyState {
+    BodyId id;
+    Sophus::SE3d T_origin_self;
+    double gMass;
+    Eigen::Vector3d velocity;
+    Eigen::Vector3d acceleration;
+  };
+
+  double currentTimeSecs_;
+  BodyId origin_;
+  std::map<BodyId, BodyState> bodyStates_;
+  const SolarSystemState& state_;
+};
+
+class SolarSystemSimulator {
+ public:
+  SolarSystemSimulator() : state_(), simulator_(state_) {}
+
+  void useSimulation() {
+    if (!useSimulation_) {
+      simulator_.initialize();
+      useSimulation_ = true;
+    }
+  }
+
+  void useSpice() { useSimulation_ = false; }
+
+  void setTime(double newEphemerisTime) {
+    state_.setTime(newEphemerisTime);
+    if (useSimulation_) {
+      simulator_.update();
+    }
+  }
+
+  double getTime() const { return state_.getTime(); }
+
+  void setOrigin(BodyId body) {
+    if (useSimulation_) {
+      simulator_.setOrigin(body);
+    }
+    state_.setOrigin(body);
+  }
+
+  BodyId origin() const { return state_.origin(); }
+
+  double radius(BodyId id) const { return state_.radius(id); }
+
+  double gMass(BodyId id) const { return state_.gMass(id); }
+
+  Sophus::SE3d T_origin_body(BodyId id) const {
+    if (useSimulation_) {
+      return simulator_.T_origin_body(id);
+    }
+    return state_.T_origin_body(id);
+  }
+
+  Eigen::Vector3d position_body(
+      BodyId id, double latitude, double longitude, double altitude) const {
+    return state_.position_body(id, latitude, longitude, altitude);
+  }
+
+  std::pair<Eigen::Vector3d, Eigen::Vector3d> linearVelocityAcceleration(
+      BodyId id,
+      double latitude,
+      double longitude,
+      double altitude,
+      double dt = 1,
+      double scale = 1) const {
+    // Never use simulation for this... just because it's simpler (and accurate)
+    return state_.linearVelocityAcceleration(
+        id, latitude, longitude, altitude, dt, scale);
+  }
+
+  const std::map<BodyId, SolarSystemState::PlanetState>& bodies() const {
+    return state_.bodies();
+  }
+
+  double positionalErrorFromSun(BodyId id) const {
+    if (useSimulation_) {
+      const Sophus::SE3d gtT_sun_body =
+          state_.T_origin_body(SUN).inverse() * state_.T_origin_body(id);
+      const Sophus::SE3d simT_sun_body =
+          simulator_.T_origin_body(SUN).inverse() *
+          simulator_.T_origin_body(id);
+
+      return (gtT_sun_body.translation() - simT_sun_body.translation()).norm();
+    }
+    return 0.0;
+  }
+
+ private:
+  bool useSimulation_ = false;
+  SolarSystemState state_;
+  GravitySolarSystemSim simulator_;
+};
 
 int main() {
   // RunUnitTests();
@@ -941,7 +1128,7 @@ int main() {
       parentDirectory / "shaders/sdf.vert",
       parentDirectory / "shaders/single_object.frag");
 
-  SolarSystemState systemState;
+  SolarSystemSimulator systemState;
 
   std::map<BodyId, ReloadableTexture> systemTextures{
       {BodyId::SUN, ReloadableTexture(parentDirectory / "assets/8k_sun.jpg")},
@@ -956,6 +1143,7 @@ int main() {
   Eigen::Vector3f lla{30 / 180.0 * M_PI, -97.0 / 180 * M_PI, 1e-3};
   Eigen::Vector2f pitchYaw{16.0 / 180 * M_PI, -90. / 180.0 * M_PI};
 
+  bool useSimulation = false;
   bool hideFromBody = false;
   bool isOrthographic = false;
   bool reverseTime = false;
@@ -990,6 +1178,15 @@ int main() {
     Sophus::SE3d T_origin_camera;
 
     ImGui::Begin("Scene Controls:");
+    ImGui::Checkbox("Use Gravity Simulation", &useSimulation);
+    if (useSimulation) {
+      systemState.useSimulation();
+      ImGui::Text(
+          "Earth Error from Sun (km): %.2f",
+          systemState.positionalErrorFromSun(BodyId::EARTH));
+    } else {
+      systemState.useSpice();
+    }
     const auto dateStr =
         SpiceHelper::EphemerisTimeToDate(systemState.getTime());
     ImGui::Text("Current Date: %s", dateStr.c_str());
@@ -1130,12 +1327,13 @@ int main() {
     // ImGui::Combo("Origin:", &selectedOriginIdx, bodies + 1, 4);
     // systemState.setOrigin(bodyFromString.at(bodies[selectedOriginIdx + 1]));
     const auto [velocity, acceleration] =
-        systemState.linearVelocityAccelerationMeters(
+        systemState.linearVelocityAcceleration(
             bodyFromString.at(bodies[selectedToBody + 1]),
             lla.x(),
             lla.y(),
             lla.z() / 1e3,
-            60);
+            60,
+            1e-6);
     ImGui::Text("Camera Velocity on Earth: %.1f m/s", velocity.norm());
     ImGui::Text(
         "Camera Acceleration on Earth: %.4f m/s^2", acceleration.norm());

@@ -828,7 +828,45 @@ void RunUnitTests() {
 }
 } // namespace
 
-enum BodyId { J2000 = -1, EARTH, MOON, MARS, SUN };
+enum BodyId {
+  J2000 = -1,
+  EARTH,
+  MOON,
+  SUN,
+  MERCURY,
+  VENUS,
+  MARS,
+  JUPITER,
+  URANUS,
+  SATURN,
+  NEPTUNE
+};
+
+std::string toString(BodyId id) {
+  if (id == J2000)
+    return "J2000";
+  if (id == EARTH)
+    return "EARTH";
+  if (id == MOON)
+    return "MOON";
+  if (id == SUN)
+    return "SUN";
+  if (id == MERCURY)
+    return "MERCURY";
+  if (id == VENUS)
+    return "VENUS";
+  if (id == MARS)
+    return "MARS";
+  if (id == JUPITER)
+    return "JUPITER";
+  if (id == SATURN)
+    return "SATURN";
+  if (id == URANUS)
+    return "URANUS";
+  if (id == NEPTUNE)
+    return "NEPTUNE";
+  return "N/A";
+}
 
 class SolarSystemState {
  public:
@@ -838,7 +876,17 @@ class SolarSystemState {
   };
 
   SolarSystemState() : ephemerisTime_(0.0f), origin_(SUN) {
-    const std::vector<BodyId> bodies = {EARTH, MOON, MARS, SUN};
+    const std::vector<BodyId> bodies = {
+        EARTH,
+        MOON,
+        SUN,
+        MARS,
+        MERCURY,
+        VENUS,
+        JUPITER,
+        URANUS,
+        SATURN,
+        NEPTUNE};
     for (const auto body : bodies) {
       bodies_[body] = PlanetState{
           .id = body,
@@ -916,11 +964,17 @@ class SolarSystemState {
 
  private:
   // Stored as: {position_name, rotation_name, radii_name}
-  static constexpr const char* BodyNames[4][3] = {
+  static constexpr const char* BodyNames[][3] = {
       {"EARTH", "IAU_EARTH", "EARTH"},
       {"MOON", "IAU_MOON", "MOON"},
-      {"MARS BARYCENTER", "IAU_MARS", "MARS"},
       {"SUN", "IAU_SUN", "SUN"},
+      {"MERCURY BARYCENTER", "IAU_MERCURY", "MERCURY"},
+      {"VENUS BARYCENTER", "IAU_VENUS", "VENUS"},
+      {"MARS BARYCENTER", "IAU_MARS", "MARS"},
+      {"JUPITER BARYCENTER", "IAU_JUPITER", "JUPITER"},
+      {"SATURN BARYCENTER", "IAU_SATURN", "SATURN"},
+      {"URANUS BARYCENTER", "IAU_URANUS", "URANUS"},
+      {"NEPTUNE BARYCENTER", "IAU_NEPTUNE", "NEPTUNE"},
   };
 
   Sophus::SE3d T_J2000_body(BodyId id) const {
@@ -1019,7 +1073,8 @@ class GravitySolarSystemSim {
     }
   }
 
-  const std::vector<BodyId> bodies = {SUN, MOON, EARTH, MARS};
+  const std::vector<BodyId> bodies = {
+      SUN, MOON, EARTH, MERCURY, VENUS, MARS, JUPITER, SATURN, URANUS, NEPTUNE};
 
   struct BodyState {
     BodyId id;
@@ -1127,34 +1182,64 @@ int main() {
   ReloadableShader shader(
       parentDirectory / "shaders/sdf.vert",
       parentDirectory / "shaders/single_object.frag");
+  ReloadableShader dayNightShader(
+      parentDirectory / "shaders/sdf.vert",
+      parentDirectory / "shaders/day_night.frag");
 
   SolarSystemSimulator systemState;
 
   std::map<BodyId, ReloadableTexture> systemTextures{
       {BodyId::SUN, ReloadableTexture(parentDirectory / "assets/8k_sun.jpg")},
-      {BodyId::EARTH, ReloadableTexture(parentDirectory / "assets/earth.jpg")},
+      {BodyId::EARTH,
+       ReloadableTexture(parentDirectory / "assets/8k_earth_daymap.jpg")},
       {BodyId::MOON, ReloadableTexture(parentDirectory / "assets/moon.jpg")},
-      {BodyId::MARS, ReloadableTexture(parentDirectory / "assets/mars.jpg")}};
+      {BodyId::MERCURY,
+       ReloadableTexture(parentDirectory / "assets/mercury.jpeg")},
+      {BodyId::VENUS, ReloadableTexture(parentDirectory / "assets/venus.jpeg")},
+      {BodyId::MARS, ReloadableTexture(parentDirectory / "assets/mars.jpg")},
+      {BodyId::JUPITER,
+       ReloadableTexture(parentDirectory / "assets/jupiter.jpeg")},
+      {BodyId::URANUS,
+       ReloadableTexture(parentDirectory / "assets/uranus.jpeg")},
+      {BodyId::SATURN,
+       ReloadableTexture(parentDirectory / "assets/saturn.jpeg")},
+      {BodyId::NEPTUNE,
+       ReloadableTexture(parentDirectory / "assets/neptune.jpeg")}};
   ImguiOpenGLRenderer globeEarth("Globe Earth");
-  ImguiOpenGLRenderer flatEarth("Flat Earth");
+  ImguiOpenGLRenderer flatEarth("Azimuthal Earth");
+  ImguiOpenGLRenderer dayNightMap("Day-Night Map");
 
   float daysPerSecond = 0; //.2;
   float cameraFieldOfViewDegs = 100.0; // 120.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{30 / 180.0 * M_PI, -97.0 / 180 * M_PI, 1e-3};
-  Eigen::Vector2f pitchYaw{16.0 / 180 * M_PI, -90. / 180.0 * M_PI};
+  Eigen::Vector3f lla{46 / 180.0 * M_PI, -122.0 / 180 * M_PI, .01};
+  Eigen::Vector2f pitchYaw{20.0 / 180 * M_PI, -120. / 180.0 * M_PI};
 
   bool useSimulation = false;
   bool hideFromBody = false;
   bool isOrthographic = false;
   bool reverseTime = false;
-  bool stepMode = false;
-  int ymdhms[6] = {2023, 3, 19, 21, 00, 00};
+  bool stepMode = true;
+  int ymdhms[6] = {2023, 3, 19, 23, 00, 00};
   int selectedCameraMode = 0;
   int selectedFromBody = 0;
   int selectedToBody = 0;
   int flatEarthPeriods = 1;
   int selectedOriginIdx = 0;
+  int selectedDayNightMapIndex = 1;
+  int selectedStepDurationIndex = 0;
+  bool longExposureMode = false;
+  bool pause = false;
+  float radiusScale = 1;
+  bool showDebugObject = false;
+  float debugObjectDistanceMeters = 1;
+  float debugObjectHeightMeters = 5;
+  float debugObjectRadiusMeters = .1;
   // systemState.setOrigin(BodyId::SUN);
+
+  std::map<BodyId, bool> hiddenBodies;
+  for (const auto& [id, _] : systemState.bodies()) {
+    hiddenBodies[id] = false;
+  }
 
   systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
       ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
@@ -1165,6 +1250,7 @@ int main() {
 
   auto previousTime = std::chrono::high_resolution_clock::now();
   glEnable(GL_DEPTH_TEST);
+  glDepthFunc(GL_LEQUAL);
   while (!window.shouldClose()) {
     window.beginNewFrame();
 
@@ -1183,6 +1269,7 @@ int main() {
     ImGui::Text("Current Date: %s", dateStr.c_str());
 
     ImGui::Spacing();
+#if 0
     ImGui::Checkbox("Use Gravity Simulation", &useSimulation);
     if (useSimulation) {
       systemState.useSimulation();
@@ -1192,9 +1279,20 @@ int main() {
     } else {
       systemState.useSpice();
     }
+#else
+    systemState.useSpice();
+#endif
+
+    const auto moveTime = [&](double dt) {
+      if (pause) {
+        return;
+      }
+      systemState.setTime(systemState.getTime() + dt);
+    };
 
     ImGui::Spacing();
     ImGui::Text("Time Controls:");
+    ImGui::Checkbox("Pause", &pause);
     ImGui::DragFloat(
         "Days per Second",
         &daysPerSecond,
@@ -1204,18 +1302,21 @@ int main() {
         "%.3f",
         ImGuiSliderFlags_Logarithmic);
     ImGui::Checkbox("Reverse time", &reverseTime);
-    ImGui::Checkbox("Enable Step Mode", &stepMode);
+    ImGui::Checkbox("Start Step Mode", &stepMode);
+    constexpr const char* stepDurations[] = {
+        "Minute", "Hour", "Day", "Month", "Year"};
+    constexpr float stepTimeSecs[] = {
+        60,
+        60 * 60,
+        60 * 60 * 24,
+        60 * 60 * 24 * (365.25 / 12),
+        60 * 60 * 60 * 24 * 365.25};
+    ImGui::Combo("Step Duration", &selectedStepDurationIndex, stepDurations, 5);
     if (stepMode) {
-      if (ImGui::Button("Step")) {
-        systemState.setTime(systemState.getTime() + dtSecs);
-      } else if (ImGui::Button("Step Day") || stepMode) {
-        systemState.setTime(
-            systemState.getTime() + 60 * 60 * 24 * (reverseTime ? -1 : 1));
-      }
+      moveTime(
+          stepTimeSecs[selectedStepDurationIndex] * (reverseTime ? -1 : 1));
     } else {
-      systemState.setTime(
-          systemState.getTime() +
-          dtSecs * 60 * 60 * 24 * daysPerSecond * (reverseTime ? -1 : 1));
+      moveTime(dtSecs * 60 * 60 * 24 * daysPerSecond * (reverseTime ? -1 : 1));
     }
     ImGui::Text("Modify Date (UTC):");
     ImGui::InputInt3("Year/Month/Day", ymdhms);
@@ -1236,26 +1337,49 @@ int main() {
         120.0f,
         "%.0f deg",
         ImGuiSliderFlags_Logarithmic);
+    ImGui::Checkbox("Long Exposure Mode", &longExposureMode);
+    bool clearImages = false;
+    if (longExposureMode) {
+      ImGui::Checkbox("Refresh Exposure", &clearImages);
+    }
     ImGui::Spacing();
     const char* cameraModes[] = {"BodyToBody", "TopDown"};
-    ImGui::Combo("Mode", &selectedCameraMode, cameraModes, 2);
-    const std::string cameraMode = cameraModes[selectedCameraMode];
-    std::set<BodyId> hiddenBodies;
+    // ImGui::Combo("Mode", &selectedCameraMode, cameraModes, 2);
+    const std::string cameraMode =
+        cameraModes[0]; // cameraModes[selectedCameraMode];
     static const std::map<std::string, BodyId> bodyFromString{
         {"Earth", BodyId::EARTH},
-        {"Sun", BodyId::SUN},
         {"Moon", BodyId::MOON},
-        {"Mars", BodyId::MARS}};
-    static const char* bodies[] = {"North", "Earth", "Sun", "Moon", "Mars"};
+        {"Sun", BodyId::SUN},
+        {"Mercury", BodyId::MERCURY},
+        {"Venus", BodyId::VENUS},
+        {"Mars", BodyId::MARS},
+        {"Jupiter", BodyId::JUPITER},
+        {"Saturn", BodyId::SATURN},
+        {"Uranus", BodyId::URANUS},
+        {"Neptune", BodyId::NEPTUNE},
+    };
+    static const char* bodies[] = {
+        "North",
+        "Earth",
+        "Moon",
+        "Sun",
+        "Mercury",
+        "Venus",
+        "Mars",
+        "Jupiter",
+        "Saturn",
+        "Uranus",
+        "Neptune"};
     if (cameraMode == "BodyToBody") {
       ImGui::Text("Bodies:");
-      ImGui::Combo("From", &selectedFromBody, bodies + 1, 4);
-      ImGui::Combo("To", &selectedToBody, bodies, 5);
-      ImGui::Checkbox("Hide From?", &hideFromBody);
+      ImGui::Combo("From", &selectedFromBody, bodies + 1, 10);
+      ImGui::Combo("To", &selectedToBody, bodies, 11);
+      // ImGui::Checkbox("Hide From?", &hideFromBody);
       const auto fromBodyId = bodyFromString.at(bodies[selectedFromBody + 1]);
-      if (hideFromBody) {
-        hiddenBodies.insert(fromBodyId);
-      }
+      // if (hideFromBody) {
+      //   hiddenBodies.insert(fromBodyId);
+      // }
       ImGui::Text("Position:");
       ImGui::SliderAngle("Latitude", &lla.x(), -90, 90);
       ImGui::SliderAngle("Longitude", &lla.y(), -180, 180);
@@ -1318,7 +1442,7 @@ int main() {
     }
 
     ImGui::Separator();
-    ImGui::Text("Flat Earth Parameters:");
+    ImGui::Text("Azimuthal Earth Parameters:");
     ImGui::SliderFloat("Sun height (km)", &flatEarthSunHeightKm, 1e-3, 10000);
     ImGui::SliderFloat("Sun size (km)", &flatEarthSunSizeKm, 1e-3, 100);
     ImGui::SliderFloat(
@@ -1327,26 +1451,49 @@ int main() {
 
     ImGui::Separator();
     ImGui::Text("Statistics:");
-    // ImGui::Combo("Origin:", &selectedOriginIdx, bodies + 1, 4);
-    // systemState.setOrigin(bodyFromString.at(bodies[selectedOriginIdx + 1]));
+    // ImGui::Combo("Origin:", &selectedOriginIdx, bodies + 1, 10);
+    // systemState.setOrigin(bodyFromString.at(bodies[selectedOriginIdx +
+    // 1]));
     const auto [velocity, acceleration] =
         systemState.linearVelocityAcceleration(
             bodyFromString.at(bodies[selectedToBody + 1]),
             lla.x(),
             lla.y(),
             lla.z() / 1e3,
-            60,
-            1e-6);
+            1,
+            1e6);
     ImGui::Text("Camera Velocity on Earth: %.1f m/s", velocity.norm());
     ImGui::Text(
         "Camera Acceleration on Earth: %.4f m/s^2", acceleration.norm());
     ImGui::Text("%.2f%% of Gravity", acceleration.norm() / 9.81 * 100);
 
+    ImGui::Separator();
+    constexpr const char* dayNightTypes[] = {"Equirectangular", "Azimuthal"};
+    ImGui::Combo("Day-Night Map", &selectedDayNightMapIndex, dayNightTypes, 2);
+
+    ImGui::Separator();
+    ImGui::Text("Debug");
+    ImGui::Checkbox("Debug Object", &showDebugObject);
+    ImGui::DragFloat(
+        "Debug Object Height (m)", &debugObjectHeightMeters, 1, 0, 1e5);
+    ImGui::DragFloat(
+        "Debug Object Radius (m)", &debugObjectRadiusMeters, 1, 0, 1e5);
+    ImGui::DragFloat(
+        "Debug Object Distance (m)", &debugObjectDistanceMeters, 1, 0, 1e5);
+
+    ImGui::DragFloat("Radius Scale", &radiusScale, 1.0, 0.0, 1e4);
+    for (auto& [id, hidden] : hiddenBodies) {
+      const std::string label = "Hide " + toString(id);
+      ImGui::Checkbox(label.c_str(), &hidden);
+    }
+
     ImGui::End();
     previousTime = currentTime;
 
     globeEarth.bind();
-    globeEarth.clear();
+    if (!longExposureMode || clearImages) {
+      globeEarth.clear();
+    }
     const ImVec2 flatSize = globeEarth.size();
     const auto [flatWidth, flatHeight] = flatSize;
 
@@ -1376,21 +1523,50 @@ int main() {
     glUseProgram(shader.id());
     glBindVertexArray(vao.id());
     for (const auto& [bodyId, _] : systemState.bodies()) {
-      if (hiddenBodies.count(bodyId)) {
+      if (hiddenBodies.at(bodyId)) {
         continue;
       }
 
-      SetObjectUniforms(
-          shader.id(),
-          camera,
-          lighting,
-          createObject(bodyId, bodyId == BodyId::SUN));
+      auto obj = createObject(bodyId, bodyId == BodyId::SUN);
+      obj.parameters.at(0) *= radiusScale;
+      SetObjectUniforms(shader.id(), camera, lighting, obj);
       glDrawArrays(GL_TRIANGLES, 0, 6);
     }
+    {
+      const Sophus::SE3d T_origin_earth = systemState.T_origin_body(EARTH);
+      const double percentCircumference = (debugObjectDistanceMeters / 1e6) /
+          (2 * systemState.radius(EARTH) * M_PI);
+      const Eigen::Vector3d debugObject_earth =
+          systemState.position_body(EARTH, lla.x(), lla.y(), 0);
+      const Sophus::SE3d R_obj_obj = Sophus::SE3d(
+          Eigen::Quaterniond::FromTwoVectors(
+              Eigen::Vector3d::UnitZ(), debugObject_earth.normalized()),
+          Eigen::Vector3d::Zero());
+      const Sophus::SO3d R_earth_obj =
+          Sophus::SO3d::rotY(-percentCircumference * 2 * M_PI);
+      const Sophus::SE3d T_origin_obj = T_origin_earth *
+          Sophus::SE3d(R_earth_obj * R_obj_obj.so3(),
+                       R_earth_obj * debugObject_earth);
+
+      static GLuint defaultTextureId = CreateTexture(255, 0, 0);
+      SDFObject debugObject{
+          .type = 2,
+          .T_self_world = T_origin_obj.inverse(),
+          .parameters =
+              {float(debugObjectRadiusMeters / 1e6),
+               float(debugObjectHeightMeters / 1e6)},
+          .texture = defaultTextureId,
+          .isMatte = true};
+      SetObjectUniforms(shader.id(), camera, lighting, debugObject);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+
     globeEarth.unbind();
 
     flatEarth.bind();
-    flatEarth.clear();
+    if (!longExposureMode || clearImages) {
+      flatEarth.clear();
+    }
     const auto shaderProgram = shader.id();
     glUseProgram(shaderProgram);
     glBindVertexArray(vao.id());
@@ -1407,7 +1583,8 @@ int main() {
         .type = 2,
         .T_self_world = Sophus::SE3d(),
         .parameters =
-            {float(systemState.radius(BodyId::EARTH) * M_PI / 2), .1f},
+            {float(systemState.radius(BodyId::EARTH) * M_PI / 2) * radiusScale,
+             .1f},
         .texture = systemTextures.at(BodyId::EARTH).id(),
         .isMatte = false,
     };
@@ -1466,7 +1643,7 @@ int main() {
     SDFObject sunObject{
         .type = 1,
         .T_self_world = (T_world_surface * T_surface_sun).inverse(),
-        .parameters = {float(flatEarthSunSizeKm / 1e3)},
+        .parameters = {float(flatEarthSunSizeKm / 1e3) * radiusScale},
         .texture = systemTextures.at(BodyId::SUN).id(),
         .isMatte = true};
 
@@ -1477,6 +1654,32 @@ int main() {
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
     flatEarth.unbind();
+
+    dayNightMap.bind();
+    dayNightMap.clear();
+    glUseProgram(dayNightShader.id());
+    glBindVertexArray(vao.id());
+    const auto sid = dayNightShader.id();
+
+    const Eigen::Vector3f lightPosition_sphere =
+        (systemState.T_origin_body(EARTH).inverse() *
+         systemState.T_origin_body(SUN).translation())
+            .cast<float>();
+    glUniform3fv(
+        glGetUniformLocation(sid, "lightPosition_sphere"),
+        1,
+        lightPosition_sphere.data());
+    glUniform1f(
+        glGetUniformLocation(sid, "sphereRadius"), systemState.radius(EARTH));
+    const Eigen::Vector2f dnResolution{
+        dayNightMap.size().x, dayNightMap.size().y};
+    glUniform2fv(
+        glGetUniformLocation(sid, "resolution"), 1, dnResolution.data());
+    glUniform1i(glGetUniformLocation(sid, "mapType"), selectedDayNightMapIndex);
+    glBindTexture(GL_TEXTURE_2D, systemTextures.at(EARTH).id());
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    dayNightMap.unbind();
 
     window.finishFrame();
   }

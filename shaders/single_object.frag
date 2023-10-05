@@ -22,9 +22,9 @@ out vec4 FragColor;
 
 // Constants
 const float PI = 3.1415926535897932384626433832795;
-const int MaximumSteps = 2048;
+const int MaximumSteps = 1024;
 const float MaximumDistance = 1e6;
-const float MinimumDistanceRatio = 1e-6;
+const float MinimumDistanceRatio = 1e-7;
 
 struct SDInfo {
     float dist;
@@ -151,7 +151,9 @@ void main() {
             intensity = 1;
         }
 
-        FragColor = textureColor * max(0, intensity);
+        FragColor = textureColor * max(1, intensity);
+
+        // FragColor = vec4(1,1,1,1) * length(result.travelled);
 
         // if (result.position.z > 1e-3) {
         //     FragColor = vec4(1, 0, 0, 1);

@@ -301,9 +301,18 @@ class ImguiOpenGLRenderer {
   void clear() { glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); }
 
   void unbind() {
+    ImVec2 size = ImGui::GetContentRegionAvail();
+    width_ = size.x;
+    height_ = size.y;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Image(
+        reinterpret_cast<void*>(static_cast<intptr_t>(texture_)),
+        ImVec2(width_, height_));
     ImGui::Image(
         reinterpret_cast<void*>(static_cast<intptr_t>(texture_)),
         {width_, height_});
+    ImGui::PopStyleVar();
     ImGui::End();
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1207,19 +1216,20 @@ int main() {
        ReloadableTexture(parentDirectory / "assets/neptune.jpeg")}};
   ImguiOpenGLRenderer globeEarth("Globe Earth");
   ImguiOpenGLRenderer flatEarth("Azimuthal Earth");
-  ImguiOpenGLRenderer dayNightMap("Day-Night Map");
+  ImguiOpenGLRenderer equiDayNightMap("Equirectangular Map");
+  ImguiOpenGLRenderer flatDayNightMap("Azimuthal Map");
 
   float daysPerSecond = 0; //.2;
-  float cameraFieldOfViewDegs = 100.0; // 120.0f / 180.0 * M_PI;
-  Eigen::Vector3f lla{46 / 180.0 * M_PI, -122.0 / 180 * M_PI, .01};
-  Eigen::Vector2f pitchYaw{20.0 / 180 * M_PI, -120. / 180.0 * M_PI};
+  float cameraFieldOfViewDegs = 120.0; // 120.0f / 180.0 * M_PI;
+  Eigen::Vector3f lla{56.5110 / 180.0 * M_PI, 3.5156 / 180 * M_PI, .001};
+  Eigen::Vector2f pitchYaw{-35 / 180 * M_PI, 6. / 180.0 * M_PI};
 
   bool useSimulation = false;
   bool hideFromBody = false;
   bool isOrthographic = false;
   bool reverseTime = false;
   bool stepMode = true;
-  int ymdhms[6] = {2023, 3, 19, 23, 00, 00};
+  int ymdhms[6] = {2020, 5, 7, 19, 23, 20};
   int selectedCameraMode = 0;
   int selectedFromBody = 0;
   int selectedToBody = 0;
@@ -1231,9 +1241,9 @@ int main() {
   bool pause = false;
   float radiusScale = 1;
   bool showDebugObject = false;
-  float debugObjectDistanceMeters = 1;
+  float debugObjectDistanceMeters = 10;
   float debugObjectHeightMeters = 5;
-  float debugObjectRadiusMeters = .1;
+  float debugObjectRadiusMeters = 1;
   // systemState.setOrigin(BodyId::SUN);
 
   std::map<BodyId, bool> hiddenBodies;
@@ -1283,8 +1293,8 @@ int main() {
     systemState.useSpice();
 #endif
 
-    const auto moveTime = [&](double dt) {
-      if (pause) {
+    const auto moveTime = [&](double dt, bool override = false) {
+      if (pause && !override) {
         return;
       }
       systemState.setTime(systemState.getTime() + dt);
@@ -1298,7 +1308,7 @@ int main() {
         &daysPerSecond,
         0.01,
         0,
-        2,
+        31,
         "%.3f",
         ImGuiSliderFlags_Logarithmic);
     ImGui::Checkbox("Reverse time", &reverseTime);
@@ -1309,12 +1319,14 @@ int main() {
         60,
         60 * 60,
         60 * 60 * 24,
-        60 * 60 * 24 * (365.25 / 12),
+        60 * 60 * 24 * int(365.25 / 12),
         60 * 60 * 60 * 24 * 365.25};
     ImGui::Combo("Step Duration", &selectedStepDurationIndex, stepDurations, 5);
-    if (stepMode) {
+    const bool forceStep = ImGui::Button("Step Forward");
+    if (forceStep || stepMode) {
       moveTime(
-          stepTimeSecs[selectedStepDurationIndex] * (reverseTime ? -1 : 1));
+          stepTimeSecs[selectedStepDurationIndex] * (reverseTime ? -1 : 1),
+          forceStep);
     } else {
       moveTime(dtSecs * 60 * 60 * 24 * daysPerSecond * (reverseTime ? -1 : 1));
     }
@@ -1334,10 +1346,10 @@ int main() {
         &cameraFieldOfViewDegs,
         1.0,
         1,
-        120.0f,
+        179.0f,
         "%.0f deg",
         ImGuiSliderFlags_Logarithmic);
-    ImGui::Checkbox("Long Exposure Mode", &longExposureMode);
+    ImGui::Checkbox("Psuedo-Long Exposure Mode", &longExposureMode);
     bool clearImages = false;
     if (longExposureMode) {
       ImGui::Checkbox("Refresh Exposure", &clearImages);
@@ -1532,7 +1544,8 @@ int main() {
       SetObjectUniforms(shader.id(), camera, lighting, obj);
       glDrawArrays(GL_TRIANGLES, 0, 6);
     }
-    {
+
+    if (showDebugObject) {
       const Sophus::SE3d T_origin_earth = systemState.T_origin_body(EARTH);
       const double percentCircumference = (debugObjectDistanceMeters / 1e6) /
           (2 * systemState.radius(EARTH) * M_PI);
@@ -1630,7 +1643,7 @@ int main() {
     sunPosition_surface.x() = sunDistanceFromCenter * std::cos(angle);
     sunPosition_surface.y() = sunDistanceFromCenter * std::sin(angle);
     sunPosition_surface.z() = flatEarthSunHeightKm / 1e3 +
-        (0.5 * std::sin(percentYear * 2 * M_PI * flatEarthPeriods) *
+        (std::sin(percentYear * 2 * M_PI * flatEarthPeriods) *
          flatEarthHeightVaryKm / 1e3);
 
     const double spinAngle =
@@ -1655,31 +1668,36 @@ int main() {
 
     flatEarth.unbind();
 
-    dayNightMap.bind();
-    dayNightMap.clear();
-    glUseProgram(dayNightShader.id());
-    glBindVertexArray(vao.id());
-    const auto sid = dayNightShader.id();
+    int mapType = 0;
+    for (auto pDayNightMap : std::vector<ImguiOpenGLRenderer*>{
+             &equiDayNightMap, &flatDayNightMap}) {
+      auto& dayNightMap = *pDayNightMap;
+      dayNightMap.bind();
+      dayNightMap.clear();
+      glUseProgram(dayNightShader.id());
+      glBindVertexArray(vao.id());
+      const auto sid = dayNightShader.id();
 
-    const Eigen::Vector3f lightPosition_sphere =
-        (systemState.T_origin_body(EARTH).inverse() *
-         systemState.T_origin_body(SUN).translation())
-            .cast<float>();
-    glUniform3fv(
-        glGetUniformLocation(sid, "lightPosition_sphere"),
-        1,
-        lightPosition_sphere.data());
-    glUniform1f(
-        glGetUniformLocation(sid, "sphereRadius"), systemState.radius(EARTH));
-    const Eigen::Vector2f dnResolution{
-        dayNightMap.size().x, dayNightMap.size().y};
-    glUniform2fv(
-        glGetUniformLocation(sid, "resolution"), 1, dnResolution.data());
-    glUniform1i(glGetUniformLocation(sid, "mapType"), selectedDayNightMapIndex);
-    glBindTexture(GL_TEXTURE_2D, systemTextures.at(EARTH).id());
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+      const Eigen::Vector3f lightPosition_sphere =
+          (systemState.T_origin_body(EARTH).inverse() *
+           systemState.T_origin_body(SUN).translation())
+              .cast<float>();
+      glUniform3fv(
+          glGetUniformLocation(sid, "lightPosition_sphere"),
+          1,
+          lightPosition_sphere.data());
+      glUniform1f(
+          glGetUniformLocation(sid, "sphereRadius"), systemState.radius(EARTH));
+      const Eigen::Vector2f dnResolution{
+          dayNightMap.size().x, dayNightMap.size().y};
+      glUniform2fv(
+          glGetUniformLocation(sid, "resolution"), 1, dnResolution.data());
+      glUniform1i(glGetUniformLocation(sid, "mapType"), mapType++);
+      glBindTexture(GL_TEXTURE_2D, systemTextures.at(EARTH).id());
+      glDrawArrays(GL_TRIANGLES, 0, 6);
 
-    dayNightMap.unbind();
+      dayNightMap.unbind();
+    }
 
     window.finishFrame();
   }

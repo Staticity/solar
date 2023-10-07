@@ -26,10 +26,10 @@ void main() {
         longitude = (uv.x + 0.5) * (2.0 * PI);
         latitude = (uv.y + 0.5) * PI;
     } else if (mapType == 1) {
-        vec2 xy = uv - vec2(.5, .5);
+        vec2 xy = vec2(.5, .5) - uv;
         float radius = length(xy);
         if (radius >= .5) {
-            FragColor=vec4(1, 1, 1, 1) * .03;
+            FragColor=vec4(1, 1, 1, 1) * .1;
             return;
         }
 
@@ -46,9 +46,7 @@ void main() {
         sin(longitude) * cos(latitude),
         sin(latitude)
     );
-    // FragColor = vec4((normal_sphere + vec3(1,1,1) / 2).x, 0, 0, 1);
-    // return;
-
+    
     vec3 position_sphere = normal_sphere * sphereRadius;
     float value = dot(normalize(position_sphere - lightPosition_sphere), normal_sphere);
     float intensity = max(0, value);

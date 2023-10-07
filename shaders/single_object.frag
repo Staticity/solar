@@ -151,7 +151,7 @@ void main() {
             intensity = 1;
         }
 
-        FragColor = textureColor * max(1, intensity);
+        FragColor = textureColor * max(.2, intensity);
 
         // FragColor = vec4(1,1,1,1) * length(result.travelled);
 

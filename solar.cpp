@@ -390,8 +390,12 @@ class SpiceHelper {
     SpiceDouble q_J2000_body[4];
     m2q_c(R_J2000_body, q_J2000_body);
 
-    return Sophus::SO3d(Eigen::Quaterniond(
-        q_J2000_body[0], q_J2000_body[1], q_J2000_body[2], q_J2000_body[3]));
+    return Sophus::SO3d(
+        Eigen::Quaterniond(
+            q_J2000_body[0],
+            q_J2000_body[1],
+            q_J2000_body[2],
+            q_J2000_body[3]));
   }
 
   static Eigen::Vector3d position_J2000(
@@ -1214,6 +1218,7 @@ int main() {
        ReloadableTexture(parentDirectory / "assets/saturn.jpeg")},
       {BodyId::NEPTUNE,
        ReloadableTexture(parentDirectory / "assets/neptune.jpeg")}};
+
   ImguiOpenGLRenderer globeEarth("Globe Earth");
   ImguiOpenGLRenderer flatEarth("Azimuthal Earth");
   ImguiOpenGLRenderer equiDayNightMap("Equirectangular Map");
@@ -1251,8 +1256,9 @@ int main() {
     hiddenBodies[id] = false;
   }
 
-  systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
-      ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
+  systemState.setTime(
+      SpiceHelper::EphemerisTimeFromDate(
+          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
 
   float flatEarthSunHeightKm = 3000;
   float flatEarthHeightVaryKm = 0;
@@ -1334,8 +1340,14 @@ int main() {
     ImGui::InputInt3("Year/Month/Day", ymdhms);
     ImGui::InputInt3("Hour/Minute/Second", ymdhms + 3);
     if (ImGui::Button("Apply")) {
-      systemState.setTime(SpiceHelper::EphemerisTimeFromDate(
-          ymdhms[0], ymdhms[1], ymdhms[2], ymdhms[3], ymdhms[4], ymdhms[5]));
+      systemState.setTime(
+          SpiceHelper::EphemerisTimeFromDate(
+              ymdhms[0],
+              ymdhms[1],
+              ymdhms[2],
+              ymdhms[3],
+              ymdhms[4],
+              ymdhms[5]));
     }
 
     ImGui::Separator();
@@ -1688,6 +1700,8 @@ int main() {
           lightPosition_sphere.data());
       glUniform1f(
           glGetUniformLocation(sid, "sphereRadius"), systemState.radius(EARTH));
+      glUniform1f(glGetUniformLocation(sid, "latitude"), lla.x());
+      glUniform1f(glGetUniformLocation(sid, "longitude"), lla.y());
       const Eigen::Vector2f dnResolution{
           dayNightMap.size().x, dayNightMap.size().y};
       glUniform2fv(

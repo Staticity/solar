@@ -1,7 +1,9 @@
 #version 410 core
 
 uniform vec3 lightPosition_sphere;
-uniform vec3 sphereRadius;
+uniform float sphereRadius;
+uniform float latitude;
+uniform float longitude;
 uniform int mapType;
 uniform vec2 resolution;
 
@@ -19,12 +21,12 @@ void main() {
     vec2 uv = gl_FragCoord.xy / resolution;
     uv.y = 1 - uv.y;
 
-    float latitude = 0;
-    float longitude = 0;
+    float lat = 0;
+    float longi = 0;
 
     if (mapType == 0) {
-        longitude = (uv.x + 0.5) * (2.0 * PI);
-        latitude = (uv.y + 0.5) * PI;
+        longi = (uv.x + 0.5) * (2.0 * PI);
+        lat = (uv.y + 0.5) * PI;
     } else if (mapType == 1) {
         vec2 xy = vec2(.5, .5) - uv;
         float radius = length(xy);
@@ -37,17 +39,17 @@ void main() {
         float v = 1 - (radius / .5);
         uv = vec2(u, v);
 
-        longitude = (uv.x + 0.5) * (2.0 * PI);
-        latitude = (uv.y + 0.5) * PI;
+        longi = (uv.x + 0.5) * (2.0 * PI);
+        lat = (uv.y + 0.5) * PI;
     }
 
     vec3 normal_sphere = vec3(
-        cos(longitude) * cos(latitude),
-        sin(longitude) * cos(latitude),
-        sin(latitude)
+        cos(longi) * cos(lat),
+        sin(longi) * cos(lat),
+        sin(lat)
     );
     
-    vec3 position_sphere = normal_sphere * sphereRadius;
+    vec3 position_sphere = normal_sphere * vec3(sphereRadius);
     float value = dot(normalize(position_sphere - lightPosition_sphere), normal_sphere);
     float intensity = max(0, value);
 
@@ -60,4 +62,21 @@ void main() {
     float alpha = 0;
     FragColor = texture(sphereTexture, uv) * (alpha + (1 - alpha) * intensity);
 
+    vec3 target_normal = vec3(
+        cos(latitude) * cos(longitude + PI),
+        cos(latitude) * sin(longitude + PI),
+        sin(latitude)
+    );
+
+    // Angular distance (radians) between directions on sphere
+    float cosAng = clamp(dot(normal_sphere, target_normal), -1.0, 1.0);
+    float angRad = acos(cosAng);
+
+    // Threshold in degrees
+    float thresholdDeg = 2.0; // tweak: 1°-3° usually looks like a visible dot
+    float thresholdRad = radians(thresholdDeg);
+
+    if (angRad < thresholdRad) {
+        FragColor = vec4(1, 0, 0, 1);
+    }
 }
